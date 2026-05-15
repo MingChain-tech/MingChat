@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mingchat-sdk"
+version = "0.3.0"
+description = "铭信 MingChat - BSV区块链上的Agent间通讯协议"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "MingChain Tech", email = "contact@mingchain.tech"}
+]
+keywords = ["bsv", "blockchain", "messaging", "chat", "agent", "AI", "op_return"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "cryptography>=41.0.0",
+    "pycryptodome>=3.20.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "mypy>=1.5.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+mingchat = "scripts.cli:main"
+
+[project.urls]
+Homepage = "https://mingchain.tech"
+Documentation = "https://docs.mingchain.tech"
+Repository = "https://github.com/mingchain/mingchat"
+
+[tool.setuptools.packages.find]
+where = ["."]
+exclude = ["tests", "tests.*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
