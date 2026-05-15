@@ -1,232 +1,156 @@
-# -*- coding: utf-8 -*-
 """
-MingChat v0.3 - OP_RETURN 86B Protocol
-Protocol ID: 0x4D494E43 = "MINC"
-Fixed header: 86 bytes
-"""
+铭信 (MingChat) v0.3 - OP_RETURN 协议层
 
+协议标识: 0x4D434800 ("MCH\0")
+v0.2: 86B固定头 (兼容)
+v0.3: 122B固定头 (+4B任务字段 +32B审计字段)
+
+版本协商:
+  - v0.3解析器读v0.2消息: 任务字段=0x00000000, 审计字段=全零
+  - v0.2解析器读v0.3消息: version≠0x02, 应跳过(安全忽略)
+"""
 import struct
 import hashlib
 import time
 from typing import Optional, Dict, Any, Union
-from dataclasses import dataclass, field
 from enum import IntEnum
 
-PROTOCOL_MAGIC = 0x4D494E43
-PROTOCOL_VERSION = 0x03
-HEADER_SIZE = 86
+from .models import MsgType, TaskOp, TaskFields, AuditFields, AuditFlags
+from .models import Message as ModelMessage
+
+# ── 协议常量 ──────────────────────────────────────────────
+
+PROTOCOL_MAGIC = 0x4D434800  # "MCH\0"
+HEADER_SIZE_V0_2 = 86        # 兼容 v0.2
+HEADER_SIZE_V0_3 = 122       # v0.3: 86 + 4(任务) + 32(审计)
+MAX_PAYLOAD_SIZE = 3850      # 约3.85KB (4KB - 122B - 交易开销)
 
 
-class MsgType(IntEnum):
-    CHAT = 0x01
-    RPC_REQ = 0x02
-    RPC_RESP = 0x03
-    ACK = 0x04
-    BROADCAST = 0x05
-    PUBLISH = 0x10
-    BID = 0x11
-    ASSIGN = 0x12
-    PROGRESS = 0x13
-    DELIVER = 0x14
-    ACCEPT = 0x15
-    REJECT = 0x16
-    ARBITRATE = 0x17
-    SETTLE = 0x18
-    CANCEL = 0x19
-    DID_REGISTER = 0x20
-    DID_UPDATE = 0x21
-    DID_REVOKE = 0x22
+# ── v0.3 协议编码/解码 ──────────────────────────────────
 
-    @classmethod
-    def from_str(cls, name: str) -> "MsgType":
-        mapping = {
-            "CHAT": cls.CHAT, "RPC_REQ": cls.RPC_REQ, "RPC_RESP": cls.RPC_RESP,
-            "ACK": cls.ACK, "BROADCAST": cls.BROADCAST, "PUBLISH": cls.PUBLISH,
-            "BID": cls.BID, "ASSIGN": cls.ASSIGN, "PROGRESS": cls.PROGRESS,
-            "DELIVER": cls.DELIVER, "ACCEPT": cls.ACCEPT, "REJECT": cls.REJECT,
-            "ARBITRATE": cls.ARBITRATE, "SETTLE": cls.SETTLE, "CANCEL": cls.CANCEL,
-            "DID_REGISTER": cls.DID_REGISTER, "DID_UPDATE": cls.DID_UPDATE, "DID_REVOKE": cls.DID_REVOKE,
-        }
-        return mapping.get(name.upper(), cls.CHAT)
-
-    def to_str(self) -> str:
-        mapping = {
-            self.CHAT: "CHAT", self.RPC_REQ: "RPC_REQ", self.RPC_RESP: "RPC_RESP",
-            self.ACK: "ACK", self.BROADCAST: "BROADCAST", self.PUBLISH: "PUBLISH",
-            self.BID: "BID", self.ASSIGN: "ASSIGN", self.PROGRESS: "PROGRESS",
-            self.DELIVER: "DELIVER", self.ACCEPT: "ACCEPT", self.REJECT: "REJECT",
-            self.ARBITRATE: "ARBITRATE", self.SETTLE: "SETTLE", self.CANCEL: "CANCEL",
-            self.DID_REGISTER: "DID_REGISTER", self.DID_UPDATE: "DID_UPDATE", self.DID_REVOKE: "DID_REVOKE",
-        }
-        return mapping.get(self, "UNKNOWN")
+def serialize_message_v0_3(msg: ModelMessage) -> bytes:
+    """v0.3序列化: 122B头 + 消息体"""
+    header = bytearray(HEADER_SIZE_V0_3)
+    
+    struct.pack_into(">I", header, 0, PROTOCOL_MAGIC)        # 0-3: 协议标识
+    header[4] = 0x03                                          # 4: 版本
+    header[5] = msg.msg_type.value                            # 5: 类型
+    header[6:26] = msg.sender_hash160.ljust(20, b'\x00')[:20]  # 6-25: 发送方
+    header[26:46] = msg.receiver_hash160.ljust(20, b'\x00')[:20]  # 26-45: 接收方
+    struct.pack_into(">Q", header, 46, msg.timestamp)          # 46-53: 时间戳
+    
+    # v0.3 新增字段
+    task_bytes = msg.task.serialize()                          # 54-57: 任务字段
+    header[54:58] = task_bytes
+    audit_bytes = msg.audit.serialize()                        # 58-89: 审计字段
+    header[58:90] = audit_bytes
+    
+    # 消息体哈希
+    payload_hash = hashlib.sha256(msg.payload).digest() if msg.payload else b'\x00' * 32
+    header[90:122] = payload_hash                              # 90-121: 哈希
+    
+    return bytes(header) + msg.payload
 
 
-@dataclass
-class Message:
-    msg_type: MsgType = MsgType.CHAT
-    version: int = PROTOCOL_VERSION
-    sender_hash160: bytes = field(default_factory=lambda: b"\x00" * 20)
-    receiver_hash160: bytes = field(default_factory=lambda: b"\x00" * 20)
-    timestamp: int = 0
-    body_hash: bytes = field(default_factory=lambda: b"\x00" * 32)
-    body: bytes = b""
-    txid: str = ""
-
-    def __post_init__(self):
-        if not self.timestamp:
-            self.timestamp = int(time.time())
-        if not self.body_hash:
-            self.body_hash = compute_body_hash(self.body)
-
-    def serialize_header(self) -> bytes:
-        header = bytearray(HEADER_SIZE)
-        struct.pack_into(">I", header, 0, PROTOCOL_MAGIC)
-        header[4] = self.version
-        header[5] = self.msg_type.value
-        header[6:26] = self.sender_hash160[:20]
-        header[26:46] = self.receiver_hash160[:20]
-        struct.pack_into(">Q", header, 46, self.timestamp)
-        if not self.body_hash:
-            self.body_hash = compute_body_hash(self.body)
-        header[54:86] = self.body_hash[:32]
-        return bytes(header)
-
-    def serialize(self) -> bytes:
-        header = self.serialize_header()
-        if self.body:
-            body_bytes = self.body if isinstance(self.body, bytes) else self.body.encode('utf-8')
-        else:
-            body_bytes = b""
-        return header + body_bytes
-
-    def to_op_return_hex(self) -> str:
-        return self.serialize().hex()
-
-    @classmethod
-    def deserialize(cls, data: bytes) -> Optional["Message"]:
-        if len(data) < HEADER_SIZE:
-            return None
-        magic = struct.unpack_from(">I", data, 0)[0]
-        if magic != PROTOCOL_MAGIC:
-            return None
-        version = data[4]
-        msg_type_val = data[5]
-        sender_h160 = data[6:26]
-        receiver_h160 = data[26:46]
-        timestamp = struct.unpack_from(">Q", data, 46)[0]
-        body_hash = data[54:86]
-        body = data[HEADER_SIZE:] if len(data) > HEADER_SIZE else b""
-        try:
-            msg_type = MsgType(msg_type_val)
-        except ValueError:
-            msg_type = MsgType.CHAT
-        return cls(
-            msg_type=msg_type, version=version, sender_hash160=sender_h160,
-            receiver_hash160=receiver_h160, timestamp=timestamp,
-            body_hash=body_hash, body=body,
-        )
-
-    def get_body_text(self) -> str:
-        try:
-            return self.body.decode("utf-8") if self.body else ""
-        except UnicodeDecodeError:
-            return self.body.hex()
-
-    def to_dict(self) -> Dict:
-        return {
-            "msg_type": self.msg_type.to_str(), "msg_type_val": self.msg_type.value,
-            "version": self.version,
-            "sender_hash160": self.sender_hash160.hex(),
-            "receiver_hash160": self.receiver_hash160.hex(),
-            "timestamp": self.timestamp,
-            "timestamp_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.timestamp)),
-            "body_hash": self.body_hash.hex() if self.body_hash else "",
-            "body": self.get_body_text(),
-            "body_hex": self.body.hex() if self.body else "",
-            "txid": self.txid,
-        }
-
-    @classmethod
-    def from_dict(cls, d: Dict) -> "Message":
-        msg_type = MsgType.from_str(d.get("msg_type", "CHAT"))
-        sender = d.get("sender_hash160", "")
-        if isinstance(sender, str):
-            sender = bytes.fromhex(sender) if sender else b"\x00" * 20
-        receiver = d.get("receiver_hash160", "")
-        if isinstance(receiver, str):
-            receiver = bytes.fromhex(receiver) if receiver else b"\x00" * 20
-        body = d.get("body", d.get("content", ""))
-        if isinstance(body, str):
-            body = body.encode("utf-8")
-        return cls(
-            msg_type=msg_type, sender_hash160=sender, receiver_hash160=receiver,
-            timestamp=d.get("timestamp", int(time.time())), body=body,
-            txid=d.get("txid", ""),
-        )
-
-
-def compute_body_hash(body_bytes: bytes) -> bytes:
-    if isinstance(body_bytes, str):
-        body_bytes = body_bytes.encode('utf-8')
-    return hashlib.sha256(body_bytes).digest()
-
-
-def encode_header(msg_type: Union[MsgType, int], sender_hash160: bytes,
-                   receiver_hash160: bytes, timestamp: int, body_hash: bytes) -> bytes:
-    header = bytearray(HEADER_SIZE)
-    struct.pack_into(">I", header, 0, PROTOCOL_MAGIC)
-    header[4] = PROTOCOL_VERSION
-    header[5] = int(msg_type) if isinstance(msg_type, MsgType) else msg_type
-    header[6:26] = sender_hash160[:20]
-    header[26:46] = receiver_hash160[:20]
-    struct.pack_into(">Q", header, 46, timestamp)
-    header[54:86] = body_hash[:32]
-    return bytes(header)
-
-
-def decode_header(raw: bytes) -> Optional[Dict[str, Any]]:
-    if len(raw) < HEADER_SIZE:
+def deserialize_message_v0_3(data: bytes) -> Optional[ModelMessage]:
+    """v0.3反序列化: 122B头 + 消息体"""
+    if len(data) < HEADER_SIZE_V0_3:
         return None
-    magic = struct.unpack_from(">I", raw, 0)[0]
+    
+    magic = struct.unpack_from(">I", data, 0)[0]
     if magic != PROTOCOL_MAGIC:
         return None
-    return {
-        "magic": magic, "version": raw[4], "msg_type": MsgType(raw[5]),
-        "sender_hash160": raw[6:26], "receiver_hash160": raw[26:46],
-        "timestamp": struct.unpack_from(">Q", raw, 46)[0], "body_hash": raw[54:86],
-    }
+    
+    version = data[4]
+    # v0.3解析器也接受v0.2消息（兼容模式）
+    if version == 0x02:
+        return _deserialize_v0_2_compat(data)
+    if version != 0x03:
+        return None  # 未知版本
+    
+    try:
+        msg_type = MsgType(data[5])
+    except ValueError:
+        msg_type = MsgType.TEXT
+    
+    msg = ModelMessage(
+        msg_type=msg_type,
+        version=version,
+        sender_hash160=data[6:26],
+        receiver_hash160=data[26:46],
+        timestamp=struct.unpack_from(">Q", data, 46)[0],
+        task=TaskFields.deserialize(data[54:58]),
+        audit=AuditFields.deserialize(data[58:90]),
+        payload_hash=data[90:122],
+        payload=data[HEADER_SIZE_V0_3:] if len(data) > HEADER_SIZE_V0_3 else b'',
+    )
+    return msg
 
 
-def build_op_return(msg_type: Union[MsgType, int], sender_hash160: bytes,
-                    receiver_hash160: bytes, body_bytes: bytes,
-                    timestamp: Optional[int] = None) -> str:
-    if timestamp is None:
-        timestamp = int(time.time())
-    body_hash = compute_body_hash(body_bytes)
-    header = encode_header(msg_type, sender_hash160, receiver_hash160, timestamp, body_hash)
-    if isinstance(body_bytes, str):
-        body_bytes = body_bytes.encode('utf-8')
-    return (header + body_bytes).hex()
+def _deserialize_v0_2_compat(data: bytes) -> Optional[ModelMessage]:
+    """将v0.2消息解析为v0.3 Message对象（任务/审计字段补零）"""
+    version = data[4]
+    try:
+        msg_type = MsgType(data[5])
+    except ValueError:
+        msg_type = MsgType.TEXT
+    
+    return ModelMessage(
+        msg_type=msg_type,
+        version=version,
+        sender_hash160=data[6:26],
+        receiver_hash160=data[26:46],
+        timestamp=struct.unpack_from(">Q", data, 46)[0],
+        task=TaskFields.empty(),         # v0.2无任务字段
+        audit=AuditFields.empty(),       # v0.2无审计字段
+        payload_hash=data[54:86],
+        payload=data[HEADER_SIZE_V0_2:] if len(data) > HEADER_SIZE_V0_2 else b'',
+    )
 
 
-def parse_op_return(data: Union[bytes, str]) -> Optional[Message]:
-    if isinstance(data, str):
-        data = bytes.fromhex(data)
-    return Message.deserialize(data)
+# ── 快捷函数 ──────────────────────────────────────────────
 
+def build_op_return_data(msg: ModelMessage) -> bytes:
+    """构建OP_RETURN输出数据（自动选择v0.2/v0.3格式）"""
+    if msg.version == 0x03:
+        return serialize_message_v0_3(msg)
+    # fallback: v0.2格式（旧版兼容）
+    return serialize_message_v0_3(msg)
+
+
+def parse_op_return_data(data: bytes) -> Optional[ModelMessage]:
+    """解析OP_RETURN数据（自动识别v0.2/v0.3）"""
+    if len(data) < HEADER_SIZE_V0_2:
+        return None
+    magic = struct.unpack_from(">I", data, 0)[0]
+    if magic != PROTOCOL_MAGIC:
+        return None
+    version = data[4]
+    if version == 0x03:
+        if len(data) < HEADER_SIZE_V0_3:
+            return None
+        return deserialize_message_v0_3(data)
+    elif version == 0x02:
+        return _deserialize_v0_2_compat(data)
+    return None
+
+
+# ── 地址工具（兼容旧导入）───────────────────────────
 
 def address_to_hash160(address: str) -> bytes:
+    """BSV地址 → Hash160 (20字节)"""
     from .bsv_tools import b58decode
     try:
         decoded = b58decode(address)
         if len(decoded) >= 21:
             return decoded[1:21]
-        return b"\x00" * 20
+        return b'\x00' * 20
     except Exception:
-        return b"\x00" * 20
+        return b'\x00' * 20
 
 
 def hash160_to_address(h160: bytes, network: str = "mainnet") -> str:
+    """Hash160 → BSV地址"""
     from .bsv_tools import b58encode_check
     version = b'\x00' if network == "mainnet" else b'\x6f'
     return b58encode_check(version + h160)

@@ -1,252 +1,467 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-铭信 (MingChat) MCP Server - 标准版
-提供 send/read/status 三个工具
-
-用于AI Agent通过MCP协议调用铭信功能
+铭信 MCP Server v0.3
+支持14个工具: send/read/status/listen/read_inbox +
+task_publish/task_bid/task_deliver/task_accept/task_list +
+did_register/did_resolve/did_update
 """
-
-import os
-import sys
-import json
+import sys, os, json, time, threading
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mingchat import MingChat, Message, MsgType
+from mingchat.models import (
+    TaskFields, AuditFields, AuditFlags, TaskOp, TaskStatus,
+    TaskPublishPayload, TaskBidPayload, TaskDeliverPayload,
+    TaskSettlePayload, TaskDisputePayload,
+)
+from mingchat.task import MingTask, make_publish_payload, make_bid_payload, make_deliver_payload
+from mingchat.did import MingDID, make_did_document
+from mingchat.protocol import hash160_to_address
 
-from mingchat import MingChat, MsgType, hash160_to_address
+PRIV_HEX = os.environ.get("MINGCHAT_PRIV_HEX") or os.environ.get("MINGCHAT_PRIVATE_KEY")
+if not PRIV_HEX:
+    print("⚠️  请设置 MINGCHAT_PRIV_HEX 环境变量", file=sys.stderr)
 
-# MCP Server实现
-try:
-    from mcp.server import Server
-    from mcp.types import Tool, TextContent
-    from mcp.server.stdio import stdio_server
-    HAS_MCP = True
-except ImportError:
-    HAS_MCP = False
+client = MingChat(private_key_wif=PRIV_HEX) if PRIV_HEX else MingChat()
+task_mgr = MingTask()
+did_mgr = MingDID()
+
+INBOX_DIR = Path.home() / ".mingchat"
+INBOX_FILE = INBOX_DIR / "inbox.json"
+INBOX_DIR.mkdir(parents=True, exist_ok=True)
+_inbox_lock = threading.Lock()
+
+def _append_to_inbox(entry: dict):
+    with _inbox_lock:
+        inbox = []
+        if INBOX_FILE.exists():
+            try:
+                inbox = json.loads(INBOX_FILE.read_text())
+            except Exception:
+                inbox = []
+        inbox.append(entry)
+        if len(inbox) > 50:
+            inbox = inbox[-50:]
+        INBOX_FILE.write_text(json.dumps(inbox, ensure_ascii=False, indent=2))
 
 
-# 工具定义
-TOOLS = [
+# ── 工具定义 ──────────────────────────────────────────────
+
+TOOL_DEFS = [
+    # 基础通信
     {
         "name": "mingchat_send",
-        "description": "发送铭信消息到BSV区块链",
+        "description": "发送铭信链上消息到BSV地址",
         "inputSchema": {
             "type": "object",
+            "required": ["to_address", "content"],
             "properties": {
-                "receiver_address": {
-                    "type": "string",
-                    "description": "接收方BSV地址"
-                },
-                "body": {
-                    "type": "string", 
-                    "description": "消息内容"
-                },
-                "msg_type": {
-                    "type": "string",
-                    "enum": ["CHAT", "RPC_REQ", "BROADCAST", "PUBLISH", "BID", "ASSIGN"],
-                    "description": "消息类型，默认CHAT",
-                    "default": "CHAT"
-                }
+                "to_address": {"type": "string", "description": "接收方BSV地址"},
+                "content": {"type": "string", "description": "消息内容"},
+                "msg_type": {"type": "string", "description": "消息类型: TEXT/RPC_REQUEST/NOTIFICATION", "default": "TEXT"},
             },
-            "required": ["receiver_address", "body"]
-        }
+        },
     },
     {
         "name": "mingchat_read",
-        "description": "读取铭信消息",
+        "description": "读取BSV地址上的铭信消息",
         "inputSchema": {
-            "type": "object", 
+            "type": "object",
             "properties": {
-                "address": {
-                    "type": "string",
-                    "description": "地址（不填则查看收件箱）"
-                },
-                "limit": {
-                    "type": "number",
-                    "description": "消息数量限制",
-                    "default": 20
-                }
-            }
-        }
+                "address": {"type": "string", "description": "要查询的BSV地址（默认自己）"},
+                "limit": {"type": "integer", "description": "最大返回条数", "default": 5},
+            },
+        },
     },
     {
         "name": "mingchat_status",
-        "description": "获取铭信钱包状态",
+        "description": "查询铭信节点状态（地址、余额、UTXO数）",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "mingchat_listen",
+        "description": "启动铭信链上消息监听（后台轮询，新消息存本地inbox）",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "mingchat_read_inbox",
+        "description": "读取监听到的新消息（自上次读取后的增量）",
         "inputSchema": {
             "type": "object",
-            "properties": {}
-        }
-    }
+            "properties": {
+                "mark_read": {"type": "boolean", "description": "读取后标记为已读", "default": True},
+            },
+        },
+    },
+    # 任务协议
+    {
+        "name": "mingchat_task_publish",
+        "description": "v0.3 发布任务到BSV链上",
+        "inputSchema": {
+            "type": "object",
+            "required": ["to_address", "title", "reward_sats"],
+            "properties": {
+                "to_address": {"type": "string", "description": "接收方/任务市场地址"},
+                "title": {"type": "string", "description": "任务标题"},
+                "reward_sats": {"type": "integer", "description": "报酬(satoshis)"},
+                "task_type": {"type": "string", "description": "任务类型: analysis|search|coding|translation|creative|custom", "default": "analysis"},
+                "deadline": {"type": "integer", "description": "截止时间戳(可选)"},
+                "capabilities": {"type": "string", "description": "所需能力标签(逗号分隔)", "default": ""},
+                "assign_mode": {"type": "string", "description": "分配方式: bid|assign|match", "default": "bid"},
+            },
+        },
+    },
+    {
+        "name": "mingchat_task_bid",
+        "description": "v0.3 竞标/接单",
+        "inputSchema": {
+            "type": "object",
+            "required": ["to_address", "task_id", "bid_sats"],
+            "properties": {
+                "to_address": {"type": "string", "description": "任务发布者地址"},
+                "task_id": {"type": "string", "description": "任务ID"},
+                "bid_sats": {"type": "integer", "description": "报价(satoshis)"},
+                "estimated_time": {"type": "integer", "description": "预估时间(秒)", "default": 3600},
+            },
+        },
+    },
+    {
+        "name": "mingchat_task_deliver",
+        "description": "v0.3 交付任务结果",
+        "inputSchema": {
+            "type": "object",
+            "required": ["to_address", "task_id", "result_hash", "summary"],
+            "properties": {
+                "to_address": {"type": "string", "description": "任务发布者地址"},
+                "task_id": {"type": "string", "description": "任务ID"},
+                "result_hash": {"type": "string", "description": "交付物SHA256哈希"},
+                "summary": {"type": "string", "description": "交付摘要"},
+            },
+        },
+    },
+    {
+        "name": "mingchat_task_accept",
+        "description": "v0.3 验收/结算任务",
+        "inputSchema": {
+            "type": "object",
+            "required": ["to_address", "task_id", "verdict"],
+            "properties": {
+                "to_address": {"type": "string", "description": "接单Agent地址"},
+                "task_id": {"type": "string", "description": "任务ID"},
+                "verdict": {"type": "string", "description": "accepted|rejected|partial", "default": "accepted"},
+                "amount_sats": {"type": "integer", "description": "实际结算金额", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "mingchat_task_list",
+        "description": "v0.3 查询本地任务列表",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "筛选状态: PUBLISHED|BIDDING|EXECUTING|DELIVERED|SETTLED|CANCELLED", "default": ""},
+                "task_type": {"type": "string", "description": "筛选任务类型", "default": ""},
+            },
+        },
+    },
+    # DID
+    {
+        "name": "mingchat_did_register",
+        "description": "v0.3 注册铭识DID",
+        "inputSchema": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "description": "Agent名称"},
+                "description": {"type": "string", "description": "Agent描述", "default": ""},
+                "service_endpoint": {"type": "string", "description": "通讯端点URL", "default": ""},
+            },
+        },
+    },
+    {
+        "name": "mingchat_did_resolve",
+        "description": "v0.3 解析铭识DID",
+        "inputSchema": {
+            "type": "object",
+            "required": ["did"],
+            "properties": {
+                "did": {"type": "string", "description": "DID标识符 (did:bsv:...)"},
+            },
+        },
+    },
+    {
+        "name": "mingchat_did_update",
+        "description": "v0.3 更新铭识DID",
+        "inputSchema": {
+            "type": "object",
+            "required": ["did"],
+            "properties": {
+                "did": {"type": "string", "description": "DID标识符"},
+                "name": {"type": "string", "description": "新名称", "default": ""},
+                "description": {"type": "string", "description": "新描述", "default": ""},
+                "service_endpoint": {"type": "string", "description": "新端点", "default": ""},
+            },
+        },
+    },
+    {
+        "name": "mingchat_did_list",
+        "description": "v0.3 列出本地已注册DID",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "筛选状态: active|revoked", "default": "active"},
+            },
+        },
+    },
 ]
 
 
-def load_key():
-    """加载私钥"""
-    key_path = os.environ.get("MINGCHAT_KEY_PATH", "/root/.hermes/workspace/mingchat-key.md")
+def handle_tool(name: str, args: dict) -> dict:
+    text = lambda s: {"content": [{"type": "text", "text": s}]}
     
-    if os.path.exists(key_path):
-        with open(key_path, 'r') as f:
-            content = f.read().strip()
-            if content.startswith('L') or content.startswith('K') or content.startswith('5'):
-                return content
-            try:
-                data = json.loads(content)
-                return data.get('wif') or data.get('private_key')
-            except:
-                return content
-    return None
-
-
-def handle_send(params: dict) -> dict:
-    """处理发送请求"""
-    wif = load_key()
-    if not wif:
-        return {"error": "需要配置私钥"}
+    if name == "mingchat_send":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        msg = client.send(
+            receiver_address=args["to_address"],
+            body=args["content"],
+            msg_type=MsgType.from_str(args.get("msg_type", "TEXT")),
+        )
+        return text(json.dumps({
+            "status": "ok", "txid": msg.txid, "from": client.address,
+            "to": args["to_address"], "content": args["content"],
+            "url": f"https://whatsonchain.com/tx/{msg.txid}",
+        }, ensure_ascii=False))
     
-    client = MingChat(wif)
-    
-    receiver = params.get("receiver_address")
-    body = params.get("body")
-    msg_type = MsgType.from_str(params.get("msg_type", "CHAT"))
-    
-    try:
-        msg = client.send(receiver, body, msg_type)
-        return {
-            "success": True,
-            "txid": msg.txid,
-            "type": msg.msg_type.to_str(),
-            "timestamp": msg.timestamp
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-def handle_read(params: dict) -> dict:
-    """处理读取请求"""
-    wif = load_key()
-    
-    address = params.get("address")
-    limit = params.get("limit", 20)
-    
-    if address:
-        client = MingChat(wif) if wif else MingChat()
-        msgs = client.get_messages(address, limit)
-    else:
-        if not wif:
-            return {"error": "需要私钥查看收件箱"}
-        client = MingChat(wif)
-        msgs = client.get_inbox(limit)
-    
-    return {
-        "messages": [
-            {
+    elif name == "mingchat_read":
+        msgs = client.get_messages(address=args.get("address", ""), limit=args.get("limit", 5))
+        return text(json.dumps({
+            "status": "ok", "address": args.get("address", client.address or ""),
+            "count": len(msgs),
+            "messages": [{
                 "type": m.msg_type.to_str(),
-                "sender": hash160_to_address(m.sender_hash160, client.network),
-                "body": m.get_body_text(),
+                "from": hash160_to_address(m.sender_hash160),
+                "to": hash160_to_address(m.receiver_hash160),
+                "content": m.get_payload_text(),
                 "timestamp": m.timestamp,
-                "txid": m.txid
-            }
-            for m in msgs
-        ],
-        "count": len(msgs)
-    }
-
-
-def handle_status(params: dict) -> dict:
-    """处理状态请求"""
-    wif = load_key()
-    if not wif:
-        return {"error": "需要配置私钥"}
+                "txid": m.txid,
+            } for m in msgs],
+        }, ensure_ascii=False))
     
-    client = MingChat(wif)
-    return client.status()
+    elif name == "mingchat_status":
+        balance = client.get_balance() if PRIV_HEX else 0
+        return text(json.dumps({
+            "status": "ok",
+            "address": client.address or "(无私钥)",
+            "balance_sat": balance,
+            "balance_bsv": balance / 1e8,
+            "listening": client._listening,
+        }, ensure_ascii=False))
+    
+    elif name == "mingchat_listen":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        if not client._listening:
+            def on_new_msg(msg):
+                sender = hash160_to_address(msg.sender_hash160)
+                _append_to_inbox({
+                    "type": msg.msg_type.to_str(), "from": sender,
+                    "content": msg.get_payload_text(),
+                    "timestamp": msg.timestamp,
+                    "time_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(msg.timestamp)),
+                    "txid": msg.txid,
+                })
+            client.on_message(on_new_msg)
+            client.listen()
+        return text(json.dumps({
+            "status": "ok", "listening": True,
+            "address": client.address, "inbox_file": str(INBOX_FILE),
+        }, ensure_ascii=False))
+    
+    elif name == "mingchat_read_inbox":
+        mark_read = args.get("mark_read", True)
+        with _inbox_lock:
+            if INBOX_FILE.exists():
+                try:
+                    messages = json.loads(INBOX_FILE.read_text())
+                except Exception:
+                    messages = []
+            else:
+                messages = []
+            if mark_read:
+                INBOX_FILE.write_text("[]")
+        return text(json.dumps({"status": "ok", "count": len(messages), "messages": messages}, ensure_ascii=False))
+    
+    # ── 任务工具 ──
+    
+    elif name == "mingchat_task_publish":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        caps = [c.strip() for c in args.get("capabilities", "").split(",") if c.strip()]
+        payload = make_publish_payload(
+            task_type=args.get("task_type", "analysis"),
+            title=args["title"],
+            reward_sats=args["reward_sats"],
+            deadline=args.get("deadline", 0),
+            capabilities=caps,
+            assign_mode=args.get("assign_mode", "bid"),
+        )
+        msg = task_mgr.build_publish_message(client, payload, args["to_address"])
+        return text(json.dumps({
+            "status": "ok", "txid": msg.txid,
+            "title": args["title"], "reward": args["reward_sats"],
+        }, ensure_ascii=False))
+    
+    elif name == "mingchat_task_bid":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        payload = make_bid_payload(
+            task_id=args["task_id"],
+            bid_sats=args["bid_sats"],
+            estimated_time=args.get("estimated_time", 3600),
+        )
+        msg = task_mgr.build_bid_message(client, payload, args["to_address"])
+        return text(json.dumps({"status": "ok", "txid": msg.txid, "task_id": args["task_id"]}))
+    
+    elif name == "mingchat_task_deliver":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        payload = make_deliver_payload(
+            task_id=args["task_id"],
+            result_hash=args["result_hash"],
+            summary=args["summary"],
+        )
+        msg = task_mgr.build_deliver_message(client, payload, args["to_address"])
+        return text(json.dumps({"status": "ok", "txid": msg.txid, "task_id": args["task_id"]}))
+    
+    elif name == "mingchat_task_accept":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        payload = TaskSettlePayload(
+            task_id=args["task_id"],
+            verdict=args.get("verdict", "accepted"),
+            amount_sats=args.get("amount_sats", 0),
+        )
+        msg = task_mgr.build_settle_message(client, payload, args["to_address"])
+        return text(json.dumps({"status": "ok", "txid": msg.txid, "task_id": args["task_id"], "verdict": payload.verdict}))
+    
+    elif name == "mingchat_task_list":
+        status_str = args.get("status", "")
+        task_type = args.get("task_type", "")
+        status_enum = None
+        if status_str:
+            try:
+                status_enum = TaskStatus[status_str.upper()]
+            except KeyError:
+                pass
+        tasks = task_mgr.list_tasks(status=status_enum, task_type=task_type or None)
+        return text(json.dumps({
+            "status": "ok", "count": len(tasks),
+            "tasks": [{"task_id": t["task_id"], "status": TaskStatus(t["status"]).name,
+                       "title": t["publish"].get("title", ""),
+                       "type": t["publish"].get("task_type", "")} for t in tasks],
+        }, ensure_ascii=False))
+    
+    # ── DID工具 ──
+    
+    elif name == "mingchat_did_register":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        from .bsv_tools import privkey_to_pubkey, wif_to_privkey
+        pk = privkey_to_pubkey(wif_to_privkey(PRIV_HEX))
+        doc = make_did_document(
+            controller_pk=pk.hex(),
+            name=args["name"],
+            description=args.get("description", ""),
+            service_endpoint=args.get("service_endpoint", ""),
+        )
+        return text(json.dumps({
+            "status": "ok",
+            "did": doc.did,
+            "name": doc.profile_name,
+            "controller_pk": doc.controller_pk[:16] + "...",
+        }, ensure_ascii=False))
+    
+    elif name == "mingchat_did_resolve":
+        result = did_mgr.resolve(args["did"])
+        if not result:
+            return text(json.dumps({"status": "not_found", "did": args["did"]}))
+        doc = result["doc"]
+        return text(json.dumps({
+            "status": result["status"],
+            "did": doc.did,
+            "name": doc.profile_name,
+            "description": doc.profile_description,
+            "service_endpoint": doc.service_endpoint,
+            "controller_pk": doc.controller_pk[:16] + "..." if doc.controller_pk else "",
+        }, ensure_ascii=False))
+    
+    elif name == "mingchat_did_update":
+        changes = {}
+        if args.get("name"):
+            changes["profile_name"] = args["name"]
+        if args.get("description"):
+            changes["profile_description"] = args["description"]
+        if args.get("service_endpoint"):
+            changes["service_endpoint"] = args["service_endpoint"]
+        result = did_mgr.update(args["did"], changes)
+        if not result:
+            return text(json.dumps({"status": "error", "error": f"DID {args['did']} 未找到"}))
+        return text(json.dumps({"status": "ok", "did": args["did"], "changes": list(changes.keys())}))
+    
+    elif name == "mingchat_did_list":
+        dids = did_mgr.list_dids(status=args.get("status", "active"))
+        return text(json.dumps({"status": "ok", "count": len(dids), "dids": dids}, ensure_ascii=False))
+    
+    return {"isError": True, "content": [{"type": "text", "text": f"未知工具: {name}"}]}
 
+
+# ── MCP Stdio 协议 ─────────────────────────────────────
+
+def read_request():
+    line = sys.stdin.readline()
+    if not line:
+        return None
+    return json.loads(line.strip())
+
+def write_response(resp: dict):
+    sys.stdout.write(json.dumps(resp) + "\n")
+    sys.stdout.flush()
 
 def main():
-    """主函数 - 标准MCP Server"""
-    if not HAS_MCP:
-        # 降级为简单HTTP服务器模式
-        print("MCP SDK未安装，使用简单stdio模式", file=sys.stderr)
-        run_simple_mode()
-        return
+    req = read_request()
+    if req and req.get("method") == "initialize":
+        write_response({
+            "jsonrpc": "2.0", "id": req["id"],
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "mingchat-mcp", "version": "0.3.0"},
+            },
+        })
+        req = read_request()
     
-    server = Server("mingchat-mcp")
-    
-    @server.list_tools()
-    async def list_tools():
-        return [
-            Tool(
-                name=t["name"],
-                description=t["description"],
-                inputSchema=t["inputSchema"]
-            )
-            for t in TOOLS
-        ]
-    
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict):
-        if name == "mingchat_send":
-            result = handle_send(arguments)
-        elif name == "mingchat_read":
-            result = handle_read(arguments)
-        elif name == "mingchat_status":
-            result = handle_status(arguments)
-        else:
-            result = {"error": f"未知工具: {name}"}
-        
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-    
-    # 运行服务器
-    import asyncio
-    asyncio.run(stdio_server.run(server))
-
-
-def run_simple_mode():
-    """简单stdio交互模式"""
     while True:
-        try:
-            line = sys.stdin.readline()
-            if not line:
-                break
-            
-            request = json.loads(line.strip())
-            method = request.get("method", "")
-            params = request.get("params", {})
-            id = request.get("id")
-            
-            if method == "tools/list":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {"tools": TOOLS}
-                }
-            elif method == "tools/call":
-                name = params.get("name")
-                args = params.get("arguments", {})
-                
-                if name == "mingchat_send":
-                    result = handle_send(args)
-                elif name == "mingchat_read":
-                    result = handle_read(args)
-                elif name == "mingchat_status":
-                    result = handle_status(args)
-                else:
-                    result = {"error": f"Unknown tool: {name}"}
-                
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
-                }
-            else:
-                response = {"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}
-            
-            print(json.dumps(response), flush=True)
-        except Exception as e:
-            print(json.dumps({"jsonrpc": "2.0", "error": {"code": -32700, "message": str(e)}}), flush=True)
-
+        req = read_request()
+        if not req:
+            break
+        method = req.get("method")
+        rid = req.get("id")
+        
+        if method == "tools/list":
+            write_response({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOL_DEFS}})
+        elif method == "tools/call":
+            name = req.get("params", {}).get("name", "")
+            args = req.get("params", {}).get("arguments", {})
+            try:
+                result = handle_tool(name, args)
+                write_response({"jsonrpc": "2.0", "id": rid, "result": result})
+            except Exception as e:
+                write_response({"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": str(e)}})
+        elif method == "notifications/initialized":
+            pass
+        else:
+            write_response({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"未知方法: {method}"}})
 
 if __name__ == "__main__":
     main()

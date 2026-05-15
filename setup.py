@@ -33,7 +33,7 @@ setup(
         "Topic :: Communications :: Chat",
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
-    packages=find_packages(exclude=["tests", "tests.*"]),
+    packages=find_packages(include=["mingchat", "scripts"]),
     python_requires=">=3.9",
     install_requires=[
         "cryptography>=41.0.0",

@@ -11,9 +11,12 @@ import struct
 import urllib.request
 from typing import Optional, Callable, List, Dict, Union
 
+from .models import MsgType
+from .models import Message
 from .protocol import (
-    Message, MsgType, build_op_return, parse_op_return,
-    address_to_hash160, hash160_to_address, compute_body_hash, HEADER_SIZE, PROTOCOL_MAGIC
+    parse_op_return_data,
+    address_to_hash160, hash160_to_address,
+    HEADER_SIZE_V0_3, PROTOCOL_MAGIC,
 )
 from .bsv_tools import (
     privkey_to_wif, wif_to_privkey, privkey_to_pubkey, privkey_to_address,
@@ -59,7 +62,7 @@ class MingChat:
     # ── 发送消息 ───────────────────────────────────────────
 
     def send(self, receiver_address: str, body: Union[str, bytes], 
-             msg_type: Union[MsgType, int] = MsgType.CHAT) -> Message:
+             msg_type: Union[MsgType, int] = MsgType.TEXT) -> Message:
         """发送链上消息，返回Message对象（含txid）"""
         if not self._privkey_bytes:
             raise RuntimeError("需要私钥才能发送消息")
@@ -71,15 +74,13 @@ class MingChat:
         
         receiver_hash160 = address_to_hash160(receiver_address)
         timestamp = int(time.time())
-        body_hash = compute_body_hash(body_bytes)
         
         msg = Message(
             msg_type=msg_type if isinstance(msg_type, MsgType) else MsgType(msg_type),
             sender_hash160=self.hash160,
             receiver_hash160=receiver_hash160,
             timestamp=timestamp,
-            body_hash=body_hash,
-            body=body_bytes,
+            payload=body_bytes,
         )
         
         # 构建OP_RETURN交易并广播
@@ -97,7 +98,7 @@ class MingChat:
             "id": int(time.time())
         }).encode('utf-8')
         
-        msg = self.send(receiver_address, payload, MsgType.RPC_REQ)
+        msg = self.send(receiver_address, payload, MsgType.RPC_REQUEST)
         return {
             "method": method,
             "params": params or {},
@@ -108,7 +109,7 @@ class MingChat:
     def reply(self, original_msg: Message, body: Union[str, bytes]) -> Message:
         """回复消息"""
         sender_addr = hash160_to_address(original_msg.sender_hash160, self.network)
-        return self.send(sender_addr, body, MsgType.RPC_RESP)
+        return self.send(sender_addr, body, MsgType.RPC_RESPONSE)
 
     # ── 监听 ───────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ class MingChat:
                 
                 data = self._fetch_op_return(txid)
                 if data:
-                    msg = parse_op_return(data)
+                    msg = parse_op_return_data(data)
                     if msg:
                         msg.txid = txid
                         msgs.append(msg)
@@ -201,7 +202,7 @@ class MingChat:
                     
                     data = self._fetch_op_return(txid)
                     if data:
-                        msg = parse_op_return(data)
+                        msg = parse_op_return_data(data)
                         if msg and (msg.receiver_hash160 == self.hash160 or 
                                    msg.receiver_hash160 == b"\x00" * 20):  # 广播也接收
                             msg.txid = txid
@@ -218,7 +219,7 @@ class MingChat:
         sender_addr = hash160_to_address(msg.sender_hash160, self.network)
         msg_type_str = msg.msg_type.to_str()
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(msg.timestamp))
-        preview = msg.get_body_text()[:200]
+        preview = msg.get_payload_text()[:200]
 
         summary = (
             f"\n{'='*60}\n"
@@ -247,8 +248,9 @@ class MingChat:
         
         utxo = utxos[0]
         
-        # 序列化OP_RETURN数据
-        op_data = msg.serialize()
+        # 序列化OP_RETURN数据 (v0.3)
+        from .protocol import serialize_message_v0_3
+        op_data = serialize_message_v0_3(msg)
         
         # 构建交易
         tx = self._build_tx(utxo, op_data)

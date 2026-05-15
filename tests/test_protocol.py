@@ -1,331 +1,287 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-MingChat v0.3 Protocol Tests
-Verify 86B header protocol encoding/decoding
-
-Note: This file uses placeholder/example keys for testing only.
-Do NOT use these keys in production!
+铭信 v0.3 协议层测试
+覆盖: v0.3序列化/反序列化、v0.2向后兼容、任务字段、审计字段
 """
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import sys
-import struct
+import unittest
 import hashlib
-from pathlib import Path
+import time
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from mingchat import (
-    MingChat, Message, MsgType,
-    build_op_return, parse_op_return,
-    address_to_hash160, hash160_to_address,
-    compute_body_hash, encode_header, decode_header,
-    HEADER_SIZE, PROTOCOL_MAGIC, PROTOCOL_VERSION,
-    privkey_to_wif, wif_to_privkey, privkey_to_address,
-    hash160, sha256, generate_privkey
+from mingchat import Message, MsgType
+from mingchat.models import TaskFields, AuditFields, AuditFlags, TaskOp, TaskStatus
+from mingchat.protocol import (
+    serialize_message_v0_3, deserialize_message_v0_3,
+    parse_op_return_data,
+    PROTOCOL_MAGIC, HEADER_SIZE_V0_2, HEADER_SIZE_V0_3,
 )
 
-# Example test key (TESTNET - for testing only, no funds)
-# DO NOT use in production!
-TEST_WIF = "L38qYrwhdLrDuKvwybSJ1QdTWWRn5VujUF6mAWWL9mdqfEmbhmw9"
-TEST_ADDRESS = "1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD"
 
+class TestProtocolV03(unittest.TestCase):
+    """v0.3 协议编解码测试"""
 
-def test_protocol_magic():
-    """Test protocol identifier"""
-    print("=" * 60)
-    print("Test 1: Protocol Identifier")
-    print(f"  PROTOCOL_MAGIC: 0x{PROTOCOL_MAGIC:08X}")
-    print(f"  Expected: 0x4D494E43 (MINC)")
-    assert PROTOCOL_MAGIC == 0x4D494E43, f"Protocol ID error: {PROTOCOL_MAGIC}"
-    print("  PASSED")
+    def setUp(self):
+        self.sender = bytes.fromhex("f595cd85067a6c8aa0423bd8d7e221c2e07b5ba7")
+        self.receiver = bytes.fromhex("a495cd85067a6c8aa0423bd8d7e221c2e07b5ba8")
+        self.payload = b"Hello MingChat v0.3!"
+        self.timestamp = int(time.time() * 1000)
 
-
-def test_header_size():
-    """Test header size"""
-    print("\n" + "=" * 60)
-    print("Test 2: Header Size")
-    print(f"  HEADER_SIZE: {HEADER_SIZE}")
-    print(f"  Expected: 86")
-    assert HEADER_SIZE == 86, f"Header size error: {HEADER_SIZE}"
-    print("  PASSED")
-
-
-def test_generate_privkey():
-    """Test key generation"""
-    print("\n" + "=" * 60)
-    print("Test 3: Key Generation")
-    
-    privkey = generate_privkey()
-    print(f"  Generated key length: {len(privkey)} bytes")
-    assert len(privkey) == 32, "Key should be 32 bytes"
-    
-    wif = privkey_to_wif(privkey)
-    address = privkey_to_address(privkey)
-    print(f"  WIF: {wif[:10]}...")
-    print(f"  Address: {address}")
-    
-    assert wif.startswith('L') or wif.startswith('K'), "WIF should start with L or K"
-    assert address.startswith('1'), "Mainnet address should start with 1"
-    
-    print("  PASSED")
-
-
-def test_encode_decode_header():
-    """Test header encoding/decoding"""
-    print("\n" + "=" * 60)
-    print("Test 4: Header Encoding/Decoding")
-    
-    msg_type = MsgType.CHAT
-    # Using well-known addresses for testing
-    sender_hash160 = address_to_hash160("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD")
-    receiver_hash160 = address_to_hash160("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")
-    timestamp = 1700000000
-    body = b"Hello, MingChat!"
-    body_hash = compute_body_hash(body)
-    
-    print(f"  Message Type: {msg_type.to_str()} ({msg_type.value})")
-    print(f"  Sender: {hash160_to_address(sender_hash160)[:16]}...")
-    print(f"  Receiver: {hash160_to_address(receiver_hash160)[:16]}...")
-    print(f"  Timestamp: {timestamp}")
-    print(f"  Body: {body}")
-    
-    # Encode
-    header = encode_header(msg_type, sender_hash160, receiver_hash160, timestamp, body_hash)
-    
-    print(f"\n  Encoded header length: {len(header)} bytes")
-    print(f"  Header hex: {header.hex()}")
-    
-    assert len(header) == HEADER_SIZE, f"Header length error: {len(header)}"
-    
-    # Decode
-    decoded = decode_header(header)
-    
-    assert decoded is not None, "Decoding failed"
-    assert decoded["magic"] == PROTOCOL_MAGIC, f"Protocol ID error: {decoded['magic']}"
-    assert decoded["version"] == PROTOCOL_VERSION, f"Version error: {decoded['version']}"
-    assert decoded["msg_type"] == msg_type, f"Message type error: {decoded['msg_type']}"
-    assert decoded["sender_hash160"] == sender_hash160, "Sender hash error"
-    assert decoded["receiver_hash160"] == receiver_hash160, "Receiver hash error"
-    assert decoded["timestamp"] == timestamp, f"Timestamp error: {decoded['timestamp']}"
-    assert decoded["body_hash"] == body_hash, "Body hash error"
-    
-    print("  PASSED")
-
-
-def test_message_serialize():
-    """Test message serialization"""
-    print("\n" + "=" * 60)
-    print("Test 5: Message Serialization/Deserialization")
-    
-    msg = Message(
-        msg_type=MsgType.RPC_REQ,
-        sender_hash160=address_to_hash160("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD"),
-        receiver_hash160=address_to_hash160("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"),
-        body=b'{"method": "ping", "params": {}}',
-        timestamp=1700000000
-    )
-    
-    print(f"  Message Type: {msg.msg_type.to_str()}")
-    print(f"  Body: {msg.body}")
-    
-    # Serialize
-    data = msg.serialize()
-    print(f"\n  Serialized length: {len(data)} bytes")
-    print(f"  First 86 bytes (header): {data[:86].hex()}")
-    print(f"  Remaining (body): {data[86:].hex()}")
-    
-    assert len(data) == HEADER_SIZE + len(msg.body), f"Length error: {len(data)}"
-    
-    # Deserialize
-    parsed = parse_op_return(data)
-    
-    assert parsed is not None, "Deserialization failed"
-    assert parsed.msg_type == msg.msg_type, f"Type error: {parsed.msg_type}"
-    assert parsed.sender_hash160 == msg.sender_hash160, "Sender error"
-    assert parsed.receiver_hash160 == msg.receiver_hash160, "Receiver error"
-    assert parsed.body == msg.body, f"Body error: {parsed.body}"
-    
-    print("  PASSED")
-
-
-def test_build_op_return():
-    """Test OP_RETURN building"""
-    print("\n" + "=" * 60)
-    print("Test 6: OP_RETURN Building")
-    
-    sender_hash160 = address_to_hash160("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD")
-    receiver_hash160 = address_to_hash160("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")
-    body = b"Test message for MingChat"
-    
-    op_return_hex = build_op_return(
-        MsgType.CHAT,
-        sender_hash160,
-        receiver_hash160,
-        body,
-        timestamp=1700000000
-    )
-    
-    print(f"  OP_RETURN hex: {op_return_hex}")
-    print(f"  Length: {len(op_return_hex)} chars ({len(op_return_hex)//2} bytes)")
-    
-    assert len(op_return_hex) == (HEADER_SIZE + len(body)) * 2, f"Length error"
-    
-    # Parse
-    data = bytes.fromhex(op_return_hex)
-    msg = parse_op_return(data)
-    
-    assert msg is not None, "Parsing failed"
-    assert msg.msg_type == MsgType.CHAT, "Type error"
-    assert msg.get_body_text() == body.decode(), "Body error"
-    
-    print("  PASSED")
-
-
-def test_address_hash160():
-    """Test address to Hash160 conversion"""
-    print("\n" + "=" * 60)
-    print("Test 7: Address to Hash160 Conversion")
-    
-    test_addresses = [
-        "1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD",
-        "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
-        "1CounterpartyXXXXXXXXXXXXXXXUWLpVr",  # 21-byte address
-    ]
-    
-    for addr in test_addresses:
-        h160 = address_to_hash160(addr)
-        recovered = hash160_to_address(h160)
-        print(f"  {addr[:20]}... -> {h160.hex()[:20]}... -> {recovered[:20]}...")
-        assert recovered == addr, f"Address conversion error: {addr} != {recovered}"
-    
-    print("  PASSED")
-
-
-def test_broadcast_type():
-    """Test broadcast address"""
-    print("\n" + "=" * 60)
-    print("Test 8: Broadcast Message")
-    
-    sender_hash160 = address_to_hash160("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD")
-    broadcast_hash160 = b"\x00" * 20
-    
-    op_return_hex = build_op_return(
-        MsgType.BROADCAST,
-        sender_hash160,
-        broadcast_hash160,
-        b"Hello everyone!",
-        timestamp=1700000000
-    )
-    
-    data = bytes.fromhex(op_return_hex)
-    msg = parse_op_return(data)
-    
-    assert msg is not None, "Parsing failed"
-    assert msg.msg_type == MsgType.BROADCAST, "Type error"
-    assert msg.receiver_hash160 == broadcast_hash160, "Receiver should be broadcast address"
-    
-    print(f"  Broadcast message built")
-    print(f"  Receiver: {msg.receiver_hash160.hex()}")
-    print("  PASSED")
-
-
-def test_all_msg_types():
-    """Test all message types"""
-    print("\n" + "=" * 60)
-    print("Test 9: All Message Types")
-    
-    sender_hash160 = address_to_hash160("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD")
-    receiver_hash160 = address_to_hash160("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")
-    body = b"Test"
-    
-    msg_types = [
-        MsgType.CHAT, MsgType.RPC_REQ, MsgType.RPC_RESP,
-        MsgType.ACK, MsgType.BROADCAST,
-        MsgType.PUBLISH, MsgType.BID, MsgType.ASSIGN,
-        MsgType.PROGRESS, MsgType.DELIVER, MsgType.ACCEPT,
-        MsgType.REJECT, MsgType.ARBITRATE, MsgType.SETTLE,
-        MsgType.CANCEL, MsgType.DID_REGISTER, MsgType.DID_UPDATE,
-        MsgType.DID_REVOKE
-    ]
-    
-    print("  Message type list:")
-    for mtype in msg_types:
-        op_hex = build_op_return(mtype, sender_hash160, receiver_hash160, body)
-        data = bytes.fromhex(op_hex)
-        parsed = parse_op_return(data)
+    def test_serialize_basic_text(self):
+        """基本TEXT消息序列化"""
+        msg = Message(
+            msg_type=MsgType.TEXT,
+            sender_hash160=self.sender,
+            receiver_hash160=self.receiver,
+            timestamp=self.timestamp,
+            payload=self.payload,
+        )
+        data = serialize_message_v0_3(msg)
         
-        status = "PASS" if parsed and parsed.msg_type == mtype else "FAIL"
-        print(f"    [{status}] {mtype.name} (0x{mtype.value:02X})")
+        # 总长度
+        self.assertEqual(len(data), HEADER_SIZE_V0_3 + len(self.payload))
         
-        assert parsed is not None, f"Parsing failed: {mtype.name}"
-        assert parsed.msg_type == mtype, f"Type mismatch: {mtype.name}"
-    
-    print("  PASSED")
+        # 协议标识
+        magic = int.from_bytes(data[0:4], 'big')
+        self.assertEqual(magic, PROTOCOL_MAGIC)
+        self.assertEqual(data[0:4], b'MCH\x00')
+        
+        # 版本和类型
+        self.assertEqual(data[4], 0x03)
+        self.assertEqual(data[5], MsgType.TEXT.value)
+        
+        # 发送方/接收方
+        self.assertEqual(data[6:26], self.sender)
+        self.assertEqual(data[26:46], self.receiver)
+        
+        # 任务字段（默认空）
+        self.assertEqual(data[54:58], b'\x00\x00\x00\x00')
+        
+        # 审计字段（默认空）
+        self.assertEqual(data[58:62], b'\x00\x00\x00\x00')
+        self.assertEqual(data[62:90], b'\x00' * 28)
+        
+        # 消息体哈希
+        expected_hash = hashlib.sha256(self.payload).digest()
+        self.assertEqual(data[90:122], expected_hash)
+        
+        # 消息体
+        self.assertEqual(data[HEADER_SIZE_V0_3:], self.payload)
+
+    def test_deserialize_basic_text(self):
+        """基本TEXT消息反序列化"""
+        msg = Message(
+            msg_type=MsgType.TEXT,
+            sender_hash160=self.sender,
+            receiver_hash160=self.receiver,
+            timestamp=self.timestamp,
+            payload=self.payload,
+        )
+        data = serialize_message_v0_3(msg)
+        msg2 = deserialize_message_v0_3(data)
+        
+        self.assertIsNotNone(msg2)
+        self.assertEqual(msg2.msg_type, MsgType.TEXT)
+        self.assertEqual(msg2.sender_hash160, self.sender)
+        self.assertEqual(msg2.receiver_hash160, self.receiver)
+        self.assertEqual(msg2.timestamp, self.timestamp)
+        self.assertEqual(msg2.payload, self.payload)
+        self.assertEqual(msg2.get_payload_text(), "Hello MingChat v0.3!")
+
+    def test_serialize_with_task_fields(self):
+        """带任务字段的消息序列化"""
+        msg = Message(
+            msg_type=MsgType.TASK_PUBLISH,
+            sender_hash160=self.sender,
+            receiver_hash160=self.receiver,
+            timestamp=self.timestamp,
+            payload=b'{"task_type":"analysis"}',
+            task=TaskFields(task_op=TaskOp.PUBLISH, task_id_lo=b'\x01\x02\x03'),
+        )
+        data = serialize_message_v0_3(msg)
+        
+        # 任务字段
+        self.assertEqual(data[54], TaskOp.PUBLISH.value)  # op
+        self.assertEqual(data[55:58], b'\x01\x02\x03')     # id_lo
+        
+        # 反序列化验证
+        msg2 = deserialize_message_v0_3(data)
+        self.assertEqual(msg2.task.task_op, TaskOp.PUBLISH)
+        self.assertEqual(msg2.task.task_id_lo, b'\x01\x02\x03')
+        self.assertEqual(msg2.msg_type, MsgType.TASK_PUBLISH)
+
+    def test_serialize_with_audit_flags(self):
+        """带审计标志位的消息"""
+        msg = Message(
+            msg_type=MsgType.TEXT,
+            sender_hash160=self.sender,
+            receiver_hash160=self.receiver,
+            timestamp=self.timestamp,
+            payload=b"secret msg",
+            audit=AuditFields(
+                scope_hash=hashlib.sha256(b"scope").digest()[:16],
+                escrow_ref=b'\x00' * 8,
+                flags=AuditFlags.ENCRYPTED | AuditFlags.HAS_DID,
+            ),
+        )
+        data = serialize_message_v0_3(msg)
+        
+        # 审计字段
+        self.assertEqual(data[58:74], hashlib.sha256(b"scope").digest()[:16])
+        self.assertEqual(data[82:86], b'\x00\x00\x00\x03')  # flags=1|2=3, 在82-85
+        
+        # 反序列化验证
+        msg2 = deserialize_message_v0_3(data)
+        self.assertEqual(msg2.audit.flags, AuditFlags.ENCRYPTED | AuditFlags.HAS_DID)
+        self.assertEqual(msg2.audit.scope_hash[:4].hex(), hashlib.sha256(b"scope").digest()[:4].hex())
+
+    def test_parse_op_return(self):
+        """parse_op_return_data 快捷函数"""
+        msg = Message(payload=b"test", sender_hash160=self.sender, receiver_hash160=self.receiver)
+        data = serialize_message_v0_3(msg)
+        msg2 = parse_op_return_data(data)
+        self.assertIsNotNone(msg2)
+        self.assertEqual(msg2.payload, b"test")
+
+    def test_roundtrip_all_msg_types(self):
+        """所有消息类型序列化/反序列化闭环"""
+        types = [
+            MsgType.TEXT, MsgType.RPC_REQUEST, MsgType.RPC_RESPONSE,
+            MsgType.NOTIFICATION, MsgType.HEARTBEAT, MsgType.ERROR,
+            MsgType.HELLO, MsgType.TASK_PUBLISH, MsgType.TASK_BID,
+            MsgType.TASK_DELIVER, MsgType.TASK_SETTLE, MsgType.TASK_DISPUTE,
+            MsgType.DID_REGISTER, MsgType.DID_UPDATE, MsgType.DID_REVOKE,
+        ]
+        for mt in types:
+            msg = Message(msg_type=mt, payload=b"x", sender_hash160=self.sender, receiver_hash160=self.receiver)
+            data = serialize_message_v0_3(msg)
+            msg2 = parse_op_return_data(data)
+            self.assertEqual(msg2.msg_type, mt, f"Failed for {mt.name}")
+
+    def test_payload_utf8(self):
+        """中文UTF-8消息体"""
+        msg = Message(
+            payload="铭信Phase1 首条链上消息! 🎉".encode("utf-8"),
+            sender_hash160=self.sender,
+            receiver_hash160=self.receiver,
+        )
+        data = serialize_message_v0_3(msg)
+        msg2 = deserialize_message_v0_3(data)
+        self.assertEqual(msg2.get_payload_text(), "铭信Phase1 首条链上消息! 🎉")
 
 
-def test_wif_operations():
-    """Test WIF private key operations"""
-    print("\n" + "=" * 60)
-    print("Test 10: WIF Private Key Operations")
-    
-    # Using testnet WIF for testing
-    test_wif = TEST_WIF
-    
-    privkey = wif_to_privkey(test_wif)
-    recovered_wif = privkey_to_wif(privkey, "mainnet")
-    address = privkey_to_address(privkey, "mainnet")
-    
-    print(f"  WIF: {test_wif}")
-    print(f"  Privkey(hex): {privkey.hex()}")
-    print(f"  Recovered WIF: {recovered_wif}")
-    print(f"  Address: {address}")
-    
-    assert recovered_wif == test_wif, "WIF recovery error"
-    assert address == TEST_ADDRESS, f"Address error: {address}"
-    
-    print("  PASSED")
+class TestCompatV02(unittest.TestCase):
+    """v0.2 向前兼容测试 — v0.3解析器读v0.2消息"""
+
+    V2_SENDER = bytes.fromhex("f595cd85067a6c8aa0423bd8d7e221c2e07b5ba7")
+    V2_RECEIVER = bytes.fromhex("a495cd85067a6c8aa0423bd8d7e221c2e07b5ba8")
+
+    def _build_v2_message(self, body: bytes, msg_type: int = 0x01) -> bytes:
+        """构造一个v0.2风格的86B头消息"""
+        header = bytearray(HEADER_SIZE_V0_2)
+        header[0:4] = PROTOCOL_MAGIC.to_bytes(4, 'big')
+        header[4] = 0x02  # v0.2
+        header[5] = msg_type
+        header[6:26] = self.V2_SENDER
+        header[26:46] = self.V2_RECEIVER
+        ts = int(time.time() * 1000)
+        header[46:54] = ts.to_bytes(8, 'big')
+        body_hash = hashlib.sha256(body).digest()
+        header[54:86] = body_hash
+        return bytes(header) + body
+
+    def test_parse_v2_text(self):
+        """v0.3解析器可读v0.2 TEXT消息"""
+        data = self._build_v2_message(b"Hello from v0.2!")
+        msg = parse_op_return_data(data)
+        self.assertIsNotNone(msg, "v0.3解析器应能解析v0.2消息")
+        self.assertEqual(msg.msg_type, MsgType.TEXT)
+        self.assertEqual(msg.get_payload_text(), "Hello from v0.2!")
+        self.assertEqual(msg.version, 0x02)
+        # v0.2消息的任务/审计字段应为空
+        self.assertTrue(msg.task.is_empty(), "v0.2消息的任务字段应为空")
+        self.assertTrue(msg.audit.is_empty(), "v0.2消息的审计字段应为空")
+
+    def test_parse_v2_rpc(self):
+        """v0.3解析器可读v0.2 RPC消息"""
+        data = self._build_v2_message(b'{"method":"ping"}', msg_type=0x02)
+        msg = parse_op_return_data(data)
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.msg_type, MsgType.RPC_REQUEST)
+
+    def test_v3_writer_emits_v3(self):
+        """v0.3写入器写入version=0x03"""
+        msg = Message(payload=b"hi", sender_hash160=self.V2_SENDER, receiver_hash160=self.V2_RECEIVER)
+        data = serialize_message_v0_3(msg)
+        self.assertEqual(data[4], 0x03)
+        self.assertEqual(len(data), HEADER_SIZE_V0_3 + 2)
+
+    def test_v2_skip_unknown_version(self):
+        """模拟v0.2解析器遇到v0.3消息——version≠0x02，旧版解析器不会解析"""
+        # 用v0.3格式序列化
+        msg = Message(payload=b"new", sender_hash160=self.V2_SENDER, receiver_hash160=self.V2_RECEIVER)
+        data = serialize_message_v0_3(msg)
+        self.assertEqual(data[4], 0x03)
+        # v0.3解析器当然能解析
+        parsed = parse_op_return_data(data)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.version, 0x03)
+        self.assertEqual(parsed.get_payload_text(), "new")
+
+    def test_v2_truncated_header(self):
+        """v0.2截断头应被拒绝"""
+        data = self._build_v2_message(b"x")
+        truncated = data[:50]  # 不足86B
+        msg = parse_op_return_data(truncated)
+        self.assertIsNone(msg)
 
 
-def main():
-    """Run all tests"""
-    print("\n" + "=" * 60)
-    print("MingChat v0.3 Protocol Tests")
-    print("=" * 60)
-    
-    tests = [
-        test_protocol_magic,
-        test_header_size,
-        test_generate_privkey,
-        test_encode_decode_header,
-        test_message_serialize,
-        test_build_op_return,
-        test_address_hash160,
-        test_broadcast_type,
-        test_all_msg_types,
-        test_wif_operations,
-    ]
-    
-    passed = 0
-    failed = 0
-    
-    for test in tests:
-        try:
-            test()
-            passed += 1
-        except Exception as e:
-            print(f"\n  FAIL: {e}")
-            import traceback
-            traceback.print_exc()
-            failed += 1
-    
-    print("\n" + "=" * 60)
-    print(f"Tests Complete: {passed} passed, {failed} failed")
-    print("=" * 60)
-    
-    return failed == 0
+class TestEdgeCases(unittest.TestCase):
+    """边界情况测试"""
+
+    def test_empty_payload(self):
+        """空消息体"""
+        msg = Message(payload=b"", sender_hash160=b'\x11' * 20, receiver_hash160=b'\x22' * 20)
+        data = serialize_message_v0_3(msg)
+        self.assertEqual(len(data), HEADER_SIZE_V0_3)
+        msg2 = deserialize_message_v0_3(data)
+        self.assertEqual(msg2.payload, b"")
+
+    def test_max_size_payload(self):
+        """接近最大尺寸的消息体"""
+        payload = b"x" * 3800  # 约3.7KB
+        msg = Message(payload=payload, sender_hash160=b'\x11' * 20, receiver_hash160=b'\x22' * 20)
+        data = serialize_message_v0_3(msg)
+        self.assertEqual(len(data), HEADER_SIZE_V0_3 + 3800)
+
+    def test_invalid_magic(self):
+        """错误的协议标识"""
+        msg = Message(payload=b"x", sender_hash160=b'\x11' * 20, receiver_hash160=b'\x22' * 20)
+        data = serialize_message_v0_3(msg)
+        data = bytearray(data)
+        data[0:4] = b'AAAA'
+        msg2 = parse_op_return_data(bytes(data))
+        self.assertIsNone(msg2)
+
+    def test_to_dict(self):
+        """to_dict输出格式"""
+        msg = Message(
+            msg_type=MsgType.NOTIFICATION,
+            payload=b"alert",
+            sender_hash160=self._h160(1),
+            receiver_hash160=self._h160(2),
+            task=TaskFields(task_op=TaskOp.PUBLISH, task_id_lo=b'\xaa\xbb\xcc'),
+            audit=AuditFields(flags=AuditFlags.NEEDS_APPROVAL),
+        )
+        d = msg.to_dict()
+        self.assertEqual(d["msg_type"], "NOTIFICATION")
+        self.assertEqual(d["task_op"], TaskOp.PUBLISH.value)
+        self.assertEqual(d["audit_flags"], AuditFlags.NEEDS_APPROVAL)
+        self.assertEqual(d["payload"], "alert")
+
+    def _h160(self, val: int) -> bytes:
+        return bytes([val] * 20)
 
 
 if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    unittest.main()

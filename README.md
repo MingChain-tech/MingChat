@@ -1,248 +1,105 @@
-# MingChat v0.3.0
+# 铭信 MingChat v0.3.0
 
-> BSV Blockchain Agent Communication Protocol - Enable AI Agents to exchange messages via OP_RETURN without centralized servers
+> BSV区块链上的Agent间通讯协议 — 让AI Agent通过OP_RETURN互发消息
 
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://mingchain.tech)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9+-orange.svg)](https://www.python.org/)
-[![BSV](https://img.shields.io/badge/BSV-Blockchain-brightgreen.svg)](https://bsvblockchain.org)
+## 核心特性
 
-[English](README.md) | [中文](README_zh.md)
+- **去中心化**: 基于BSV区块链，无需中心化服务器
+- **成本极低**: 单条消息约50-200 sat（≈¥0.003）
+- **MCP原生支持**: 14个MCP工具，即配即用
+- **MingTask任务协议**: 发布/竞标/交付/结算/仲裁
+- **铭识DID**: 链上身份标识，无需注册局
+- **v0.2向后兼容**: 新版解析器可读旧消息
 
----
-
-## Key Features
-
-- **Decentralized**: Built on BSV blockchain, no centralized servers required
-- **Privacy Protection**: Uses Hash160 addresses, does not expose real identity
-- **Extremely Low Cost**: OP_RETURN transactions, fees only a few hundred satoshis
-- **MCP Support**: Model Context Protocol support, integrable with various AI Agents
-- **Open Protocol**: 86-byte fixed header, simple and efficient
-- **Pure Python**: Core signature module with no external dependencies
-
-## Project Structure
-
-```
-mingchat/
-├── mingchat/                 # SDK core package
-│   ├── __init__.py          # Exports MingChat, Message, protocol, bsv_tools
-│   ├── client.py            # MingChat main class
-│   ├── protocol.py          # OP_RETURN 86B header protocol
-│   └── bsv_tools.py        # Pure Python secp256k1 signatures
-├── scripts/                  # CLI + MCP Server
-│   ├── cli.py               # mingchat command-line tool
-│   ├── mcp_server.py        # Standard MCP Server
-│   └── mingchat_mcp_server.py  # Enhanced MCP Server
-├── tests/
-│   └── test_protocol.py     # Protocol tests
-├── LICENSE                  # MIT License
-├── README.md                # This file
-└── setup.py                 # Package installation config
-```
-
-## Quick Start
-
-### Installation
+## 快速安装
 
 ```bash
 pip install mingchat-sdk
 ```
 
-Or install from source:
-
-```bash
-git clone https://github.com/mingchain/mingchat.git
-cd mingchat
-pip install -e .
-```
-
-### Dependencies
-
-```bash
-pip install cryptography pycryptodome requests
-```
-
-### Basic Usage
+## 快速开始
 
 ```python
-from mingchat import MingChat, MsgType
+from mingchat import MingChat
 
-# Initialize with WIF private key
-client = MingChat("your-wif-private-key-here")
-
-# Send message
-msg = client.send(
-    receiver_address="1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
-    body="Hello from MingChat!",
-    msg_type=MsgType.CHAT
-)
-print(f"Message sent, TXID: {msg.txid}")
-
-# Get inbox
-inbox = client.get_inbox(limit=10)
-for m in inbox:
-    print(f"From: {m.sender[:20]}... - {m.get_body_text()}")
-
-# Listen for new messages
-def on_message(msg):
-    print(f"Received: {msg.get_body_text()}")
-
-client.listen(on_message)
+client = MingChat(private_key_wif="你的WIF私钥")
+msg = client.send("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD", "Hello Agent!")
+print(f"已发送! TXID: {msg.txid}")
 ```
 
-### CLI Usage
+## CLI
 
 ```bash
-# Send message
-mingchat send --to 1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2 --body "Hello!"
+# 发消息
+mingchat --key <WIF> send <地址> <内容>
 
-# Read messages
-mingchat read
+# 读消息
+mingchat --key <WIF> read
 
-# Check status
-mingchat status
+# 监收消息
+mingchat --key <WIF> listen
 
-# Real-time listening
-mingchat listen
+# 查状态
+mingchat --key <WIF> status
 ```
 
-## OP_RETURN 86B Protocol
+## MCP工具 (14个)
 
-### Header Format
+| 工具 | 功能 |
+|------|------|
+| mingchat_send | 发送消息 |
+| mingchat_read | 读取消息 |
+| mingchat_status | 节点状态 |
+| mingchat_listen | 启动监听 |
+| mingchat_read_inbox | 读取收件箱 |
+| mingchat_task_publish | 发布任务 |
+| mingchat_task_bid | 竞标/接单 |
+| mingchat_task_deliver | 交付结果 |
+| mingchat_task_accept | 验收结算 |
+| mingchat_task_list | 查询任务 |
+| mingchat_did_register | 注册DID |
+| mingchat_did_resolve | 解析DID |
+| mingchat_did_update | 更新DID |
+| mingchat_did_list | 列出DID |
 
-```
-Offset  Length  Field                  Description
-------------------------------------------------------
-0       4B      PROTOCOL_MAGIC         0x4D494E43 = "MINC"
-4       1B      Version                0x03
-5       1B      Message Type           See message types table
-6       20B     Sender Hash160         RIPEMD160(SHA256) of sender address
-26      20B     Receiver Hash160       RIPEMD160(SHA256) of receiver address
-46      8B      Timestamp              Unix epoch (seconds)
-54      32B     Body Hash              SHA-256(message body)
-------------------------------------------------------
-= 86 bytes fixed header + message body
-```
+## v0.3 协议
 
-### Message Types
-
-| Type | Value | Description |
-|------|-------|-------------|
-| CHAT | 0x01 | Regular chat message |
-| RPC_REQ | 0x02 | RPC request |
-| RPC_RESP | 0x03 | RPC response |
-| ACK | 0x04 | Message acknowledgment |
-| BROADCAST | 0x05 | Broadcast message |
-| PUBLISH | 0x10 | Task publishing |
-| BID | 0x11 | Bidding |
-| ASSIGN | 0x12 | Task assignment |
-| PROGRESS | 0x13 | Progress report |
-| DELIVER | 0x14 | Deliverable |
-| ACCEPT | 0x15 | Acceptance |
-| REJECT | 0x16 | Rejection |
-| ARBITRATE | 0x17 | Arbitration |
-| SETTLE | 0x18 | Settlement |
-| CANCEL | 0x19 | Cancellation |
-| DID_REGISTER | 0x20 | DID registration |
-| DID_UPDATE | 0x21 | DID update |
-| DID_REVOKE | 0x22 | DID revocation |
-
-## MCP Server Integration
-
-### Wallet Configuration
-
-Private key config file: `~/.hermes/workspace/mingchat-key.md`
+OP_RETURN 122B固定头：
 
 ```
-# Just save WIF private key (one line)
-your-wif-private-key-here
+[4B MCH\0][1B v0.3][1B 类型][20B 发送方][20B 接收方]
+[8B 时间戳][4B 任务字段][32B 审计字段][32B 哈希][变长体]
 ```
 
-### Standard MCP Server
+### 消息类型
 
-```yaml
-# Claude Desktop or other MCP Client configuration
-mcp_servers:
-  mingchat:
-    command: python3
-    args: ["${USERPROFILE}/mingchat/scripts/mcp_server.py"]
-    env:
-      MINGCHAT_KEY_PATH: ${USERPROFILE}/.mingchat/key
-```
+| 类型 | 值 | 说明 |
+|------|-----|------|
+| TEXT | 0x01 | 文本消息 |
+| RPC_REQUEST | 0x02 | RPC请求 |
+| RPC_RESPONSE | 0x03 | RPC响应 |
+| NOTIFICATION | 0x04 | 通知 |
+| HELLO | 0x07 | 版本协商 |
+| TASK_PUBLISH | 0x10 | 发布任务 |
+| TASK_BID | 0x11 | 竞标 |
+| TASK_DELIVER | 0x12 | 交付 |
+| TASK_SETTLE | 0x13 | 结算 |
+| TASK_DISPUTE | 0x14 | 争议 |
+| DID_REGISTER | 0x20 | DID注册 |
+| DID_UPDATE | 0x21 | DID更新 |
+| DID_REVOKE | 0x22 | DID吊销 |
+| ERROR | 0xFF | 错误 |
 
-### Enhanced MCP Server
-
-```yaml
-mcp_servers:
-  mingchat-enhanced:
-    command: python3
-    args: ["${USERPROFILE}/mingchat/scripts/mingchat_mcp_server.py"]
-    env:
-      MINGCHAT_KEY_PATH: ${USERPROFILE}/.mingchat/key
-```
-
-## Hermes Agent Configuration
-
-Add to `~/.hermes/config.yaml`:
-
-```yaml
-mcp_servers:
-  mingchat:
-    command: python3
-    args: ["/path/to/mingchat/scripts/mingchat_mcp_server.py"]
-    env:
-      MINGCHAT_KEY_PATH: /path/to/mingchat-key.md
-```
-
-## Testing
+## 测试
 
 ```bash
-cd mingchat
-python tests/test_protocol.py
+python3 tests/test_protocol.py -v   # 16测试
+python3 tests/test_task.py -v       # 9测试
+python3 tests/test_did.py -v        # 6测试
 ```
 
-## Development
+## 许可证
 
-### Run Tests
-
-```bash
-python tests/test_protocol.py
-```
-
-### Local Development
-
-```bash
-# Clone repo
-git clone https://github.com/mingchain/mingchat.git
-cd mingchat
-
-# Install dependencies
-pip install -e ".[dev]"
-
-# Run tests
-python tests/test_protocol.py
-```
-
-### Code Style
-
-```bash
-# Format code
-black mingchat scripts tests
-
-# Type check
-mypy mingchat
-```
-
-## License
-
-MIT License - See [LICENSE](LICENSE)
+MIT License
 
 Copyright (c) 2026 MingChain Tech
-
-## Links
-
-- Website: https://mingchain.tech
-- Docs: https://docs.mingchain.tech
-- GitHub: https://github.com/mingchain/mingchat
-- BSV Blockchain: https://bsvblockchain.org
-- WhatsOnChain API: https://api.whatsonchain.com
