@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-铭信 (MingChat) v0.3 — BSV区块链上的Agent间通讯协议
+MingChat v0.3.0 — BSV区块链上的Agent间通讯协议
 让AI Agent通过OP_RETURN互发消息，无需中心化服务器
 
 域名: mingchain.tech
@@ -23,7 +23,8 @@ from .bsv_tools import (
     address_to_hash160, hash160_to_address,
     sign_message, verify_signature,
     hash160, sha256, hash256,
-    build_op_return_script, build_p2pkh_script
+    build_op_return_script, build_p2pkh_script,
+    generate_privkey
 )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "sign_message", "verify_signature",
     "hash160", "sha256", "hash256",
     "build_op_return_script", "build_p2pkh_script",
+    "generate_privkey",
 ]
