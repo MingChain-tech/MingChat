@@ -18,10 +18,23 @@ from .models import (
 from .bsv_tools import ecdsa_sign, ecdsa_verify, privkey_to_pubkey
 
 
+def _pubkey_to_did_id(pubkey_hex: str) -> str:
+    """压缩公钥hex → DID标识符 (hash160(公钥)的前20字节hex = 40字符)
+    一把私钥只有一个压缩公钥 → 一个hash160 → 唯一DID
+    """
+    from .bsv_tools import hash160 as bsv_hash160
+    pubkey_bytes = bytes.fromhex(pubkey_hex) if len(pubkey_hex) == 66 else pubkey_hex.encode()
+    h160 = bsv_hash160(pubkey_bytes)
+    return h160.hex()[:40]
+
+
 class MingDID:
     """
     铭识DID管理器
     注册/解析/更新/吊销 DID 文档
+
+    关键约束: did:bsv:{hash160(controller_pk)[:40]}
+    密码学保证了同一把私钥(一个压缩公钥)只能生成唯一DID。
     """
 
     def __init__(self):
@@ -33,17 +46,31 @@ class MingDID:
                  name: str = "", description: str = "",
                  service_endpoint: str = "",
                  capabilities_hash: str = "",
-                 controller_privkey: bytes = None) -> dict:
+                 controller_privkey: bytes = None,
+                 identity_level: int = 0,
+                 kyc_hash: str = "",
+                 kyc_provider: str = "",
+                 license_ref: str = "") -> dict:
         """
         创建DID注册请求
         实际注册需要发送到链上，这里先构建DID文档
+
+        ⚠ 方案A: 本地防重复 — 同一controller_pk不允许重复注册
         """
-        # 用controller_pk的hash160作为DID标识符的基础
-        did_seed = hashlib.sha256(bytes.fromhex(controller_pk) if len(controller_pk) == 66
-                                   else controller_pk.encode()).hexdigest()[:16]
+        did_id = _pubkey_to_did_id(controller_pk)
+        did_str = f"did:bsv:{did_id}"
+
+        # 方案A: 本地注册表检查 — 同一controller_pk已注册则拒绝
+        for existing_did, entry in self._registry.items():
+            if entry.get("doc", {}).controller_pk == controller_pk:
+                if entry.get("status") != "revoked":
+                    raise ValueError(
+                        f"controller_pk 已注册为 {existing_did}，"
+                        f"同一私钥只能注册一个DID。如要重新注册，请先吊销旧DID。"
+                    )
         
         doc = DIDDocument(
-            did=f"did:bsv:{did_seed}",
+            did=did_str,
             controller_pk=controller_pk,
             auth_pk=auth_pk or controller_pk,
             service_endpoint=service_endpoint,
@@ -51,6 +78,10 @@ class MingDID:
             profile_name=name,
             profile_description=description,
             profile_version="1.0",
+            identity_level=identity_level,
+            kyc_hash=kyc_hash,
+            kyc_provider=kyc_provider,
+            license_ref=license_ref,
         )
         
         # 如果有私钥，签名
@@ -64,6 +95,16 @@ class MingDID:
             # DER编码签名
             from .bsv_tools import der_encode_sig
             doc.controller_sig = der_encode_sig(sig[0], sig[1], 0x01).hex()
+        
+        # 写入本地注册表（供方案A防重复检查）
+        entry = {
+            "doc": doc,
+            "status": "active",
+            "update_seq": 1,
+            "created_at": int(time.time() * 1000),
+            "updated_at": int(time.time() * 1000),
+        }
+        self._registry[did_str] = entry
         
         return doc
 
@@ -160,6 +201,11 @@ class MingDID:
             profile_description=data.get("profile", {}).get("description", ""),
             controller_sig=data.get("controller_sig", ""),
             registration_txid=msg.txid,
+            # 身份等级字段
+            identity_level=data.get("identity_level", 0),
+            kyc_hash=data.get("kyc_hash", ""),
+            kyc_provider=data.get("kyc_provider", ""),
+            license_ref=data.get("license_ref", ""),
         )
         
         entry = {
@@ -223,18 +269,26 @@ def make_did_document(
     name: str = "",
     description: str = "",
     service_endpoint: str = "",
+    identity_level: int = 0,
+    kyc_hash: str = "",
+    kyc_provider: str = "",
+    license_ref: str = "",
 ) -> DIDDocument:
-    """快速创建DID文档"""
-    did_seed = hashlib.sha256(
-        bytes.fromhex(controller_pk) if len(controller_pk) == 66
-        else controller_pk.encode()
-    ).hexdigest()[:16]
+    """快速创建DID文档
+
+    使用 hash160(压缩公钥) 作为DID标识符，保证一私钥一DID。
+    """
+    did_id = _pubkey_to_did_id(controller_pk)
     
     return DIDDocument(
-        did=f"did:bsv:{did_seed}",
+        did=f"did:bsv:{did_id}",
         controller_pk=controller_pk,
         auth_pk=auth_pk or controller_pk,
         service_endpoint=service_endpoint,
         profile_name=name,
         profile_description=description,
+        identity_level=identity_level,
+        kyc_hash=kyc_hash,
+        kyc_provider=kyc_provider,
+        license_ref=license_ref,
     )

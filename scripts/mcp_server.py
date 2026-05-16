@@ -50,8 +50,8 @@ def _append_to_inbox(entry: dict):
 
 # ── 工具定义 ──────────────────────────────────────────────
 
-TOOL_DEFS = [
-    # 基础通信
+TOOL_DEFS = [  # 20个工具
+    # 通用
     {
         "name": "mingchat_send",
         "description": "发送铭信链上消息到BSV地址",
@@ -170,7 +170,7 @@ TOOL_DEFS = [
     # DID
     {
         "name": "mingchat_did_register",
-        "description": "v0.3 注册铭识DID",
+        "description": "v0.3.2 注册铭识DID（含身份等级）",
         "inputSchema": {
             "type": "object",
             "required": ["name"],
@@ -178,6 +178,10 @@ TOOL_DEFS = [
                 "name": {"type": "string", "description": "Agent名称"},
                 "description": {"type": "string", "description": "Agent描述", "default": ""},
                 "service_endpoint": {"type": "string", "description": "通讯端点URL", "default": ""},
+                "identity_level": {"type": "integer", "description": "身份等级: 0=匿名 1=邮箱 2=企业 3=个人KYC 4=政府", "default": 0},
+                "kyc_hash": {"type": "string", "description": "sha256(KYC机构签名+实名信息)", "default": ""},
+                "kyc_provider": {"type": "string", "description": "KYC机构DID或URL", "default": ""},
+                "license_ref": {"type": "string", "description": "牌照/许可证引用", "default": ""},
             },
         },
     },
@@ -213,6 +217,49 @@ TOOL_DEFS = [
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "筛选状态: active|revoked", "default": "active"},
+            },
+        },
+    },
+    # ── 信誉系统 (v0.3.2) ──
+    {
+        "name": "mingchat_rep_score",
+        "description": "v0.3.2 发送信誉评分到链上",
+        "inputSchema": {
+            "type": "object",
+            "required": ["target_did", "score"],
+            "properties": {
+                "target_did": {"type": "string", "description": "被评分DID (did:bsv:...)"},
+                "score": {"type": "integer", "description": "总体评分 0-100"},
+                "relates_to": {"type": "string", "description": "关联交易TXID", "default": ""},
+                "tx_type": {"type": "string", "description": "交易类型: task|chat|arbitration", "default": ""},
+                "quality": {"type": "integer", "description": "质量分 0-100", "default": 0},
+                "timeliness": {"type": "integer", "description": "准时分 0-100", "default": 0},
+                "comm": {"type": "integer", "description": "沟通分 0-100", "default": 0},
+                "text": {"type": "string", "description": "简短评语（OP_RETURN内）", "default": ""},
+            },
+        },
+    },
+    {
+        "name": "mingchat_rep_query",
+        "description": "v0.3.2 查询DID的信誉数据",
+        "inputSchema": {
+            "type": "object",
+            "required": ["did"],
+            "properties": {
+                "did": {"type": "string", "description": "DID标识符"},
+            },
+        },
+    },
+    {
+        "name": "mingchat_rep_bond",
+        "description": "v0.3.2 信誉质押操作",
+        "inputSchema": {
+            "type": "object",
+            "required": ["action", "amount", "target_did"],
+            "properties": {
+                "action": {"type": "string", "description": "lock|release"},
+                "amount": {"type": "integer", "description": "质押金额（sat）"},
+                "target_did": {"type": "string", "description": "被质押DID"},
             },
         },
     },
@@ -400,12 +447,17 @@ def handle_tool(name: str, args: dict) -> dict:
             name=args["name"],
             description=args.get("description", ""),
             service_endpoint=args.get("service_endpoint", ""),
+            identity_level=args.get("identity_level", 0),
+            kyc_hash=args.get("kyc_hash", ""),
+            kyc_provider=args.get("kyc_provider", ""),
+            license_ref=args.get("license_ref", ""),
         )
         return text(json.dumps({
             "status": "ok",
             "did": doc.did,
             "name": doc.profile_name,
-            "controller_pk": doc.controller_pk[:16] + "...",
+            "identity_level": doc.identity_level,
+            "kyc_provider": doc.kyc_provider or None,
         }, ensure_ascii=False))
     
     elif name == "mingchat_did_resolve":
@@ -508,6 +560,125 @@ def handle_tool(name: str, args: dict) -> dict:
             "status": "ok",
             "spv_running": spv_listener.is_running,
             "stats": spv_listener.get_stats(),
+        }, ensure_ascii=False))
+
+    # ── 信誉系统 (v0.3.2) ──
+    elif name == "mingchat_rep_score":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        if not _client:
+            from mingchat import MingChat
+            private_key = PRIV_HEX
+            if len(private_key) == 64:
+                from mingchat.bsv_tools import privkey_to_wif
+                private_key = privkey_to_wif(bytes.fromhex(private_key))
+            _client = MingChat(private_key_wif=private_key)
+        
+        # 构建评分消息体
+        dims = {}
+        if args.get("quality"): dims["quality"] = args["quality"]
+        if args.get("timeliness"): dims["timeliness"] = args["timeliness"]
+        if args.get("comm"): dims["comm"] = args["comm"]
+        
+        payload = {
+            "rep": {
+                "v": 1,
+                "target": args["target_did"],
+                "relates_to": args.get("relates_to", ""),
+                "tx_type": args.get("tx_type", ""),
+                "score": args["score"],
+                "dims": dims,
+                "lang": "zh",
+            }
+        }
+        
+        # 签名
+        from mingchat.bsv_tools import wif_to_privkey as _wif2pk
+        privkey_bytes = _wif2pk(PRIV_HEX if len(PRIV_HEX) != 64 else private_key)
+        from mingchat.reputation import sign_reputation as _sign_rep
+        sig = _sign_rep(payload["rep"], privkey_bytes)
+        payload["sig"] = sig
+        
+        body = json.dumps(payload, ensure_ascii=False)
+        
+        # 发送REPUTATION_SCORE消息
+        msg = _client.send(_client.address, body, MsgType.REPUTATION_SCORE)
+        
+        result = {
+            "status": "ok",
+            "txid": msg.txid,
+            "target": args["target_did"],
+            "score": args["score"],
+            "url": f"https://whatsonchain.com/tx/{msg.txid}",
+        }
+        
+        # 如果同时有text评语，再发一条REPUTATION_REVIEW
+        if args.get("text"):
+            review_payload = {
+                "target": args["target_did"],
+                "relates_to": f"txid:{msg.txid}",
+                "text": args["text"][:3850],
+                "lang": "zh",
+            }
+            _client.send(_client.address, json.dumps(review_payload, ensure_ascii=False),
+                         MsgType.REPUTATION_REVIEW)
+            result["review_txid"] = msg.txid
+        
+        return text(json.dumps(result, ensure_ascii=False))
+
+    elif name == "mingchat_rep_query":
+        did = args["did"]
+        # 解析DID中的hash160
+        if not did.startswith("did:bsv:"):
+            return text(json.dumps({"status": "error", "error": f"无效DID格式: {did}"}))
+        
+        # 从Bridge查询
+        try:
+            import urllib.request
+            bridge_host = os.environ.get("BRIDGE_HOST", "http://127.0.0.1:8900")
+            url = f"{bridge_host}/reputation/{did}/stats"
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                stats = json.loads(resp.read())
+            
+            # 同时拉scores
+            url2 = f"{bridge_host}/reputation/{did}/scores?limit=20"
+            with urllib.request.urlopen(url2, timeout=10) as resp2:
+                scores_data = json.loads(resp2.read())
+            
+            return text(json.dumps({
+                "status": "ok",
+                "did": did,
+                "stats": stats,
+                "recent_scores": scores_data.get("scores", [])[:10],
+            }, ensure_ascii=False))
+        except Exception as e:
+            return text(json.dumps({"status": "error", "error": f"查询失败: {e}"}))
+
+    elif name == "mingchat_rep_bond":
+        if not PRIV_HEX:
+            return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+        if not _client:
+            from mingchat import MingChat
+            private_key = PRIV_HEX
+            if len(private_key) == 64:
+                from mingchat.bsv_tools import privkey_to_wif
+                private_key = privkey_to_wif(bytes.fromhex(private_key))
+            _client = MingChat(private_key_wif=private_key)
+        
+        bond_payload = {
+            "action": args["action"],
+            "amount": args["amount"],
+            "target_did": args["target_did"],
+        }
+        msg = _client.send(_client.address, json.dumps(bond_payload, ensure_ascii=False),
+                           MsgType.REPUTATION_BOND)
+        
+        return text(json.dumps({
+            "status": "ok",
+            "txid": msg.txid,
+            "action": args["action"],
+            "amount": args["amount"],
+            "target_did": args["target_did"],
         }, ensure_ascii=False))
 
     return {"isError": True, "content": [{"type": "text", "text": f"未知工具: {name}"}]}

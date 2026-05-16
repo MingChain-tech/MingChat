@@ -27,8 +27,13 @@ from .bsv_tools import (
     build_op_return_script, build_p2pkh_script,
     generate_privkey,
 )
+from .reputation import (
+    ReputationStore,
+    ReputationScore, ReputationReview, ReputationBond,
+    sign_reputation, verify_reputation,
+)
 
-__version__ = "0.3.0"
+__version__ = "0.3.2"
 __author__ = "MingChain Tech"
 
 __all__ = [
@@ -52,4 +57,8 @@ __all__ = [
     "hash160", "sha256", "hash256",
     "build_op_return_script", "build_p2pkh_script",
     "generate_privkey",
+    # 信誉系统 (v0.3.2)
+    "ReputationStore",
+    "ReputationScore", "ReputationReview", "ReputationBond",
+    "sign_reputation", "verify_reputation",
 ]

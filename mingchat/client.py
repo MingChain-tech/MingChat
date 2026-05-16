@@ -30,7 +30,7 @@ class MingChat:
     """铭信客户端 - 发送和接收BSV链上消息"""
 
     BASE_URL = "https://api.whatsonchain.com/v1/bsv/main"
-    MINING_FEE = 100  # satoshis
+    MINING_FEE = 50  # satoshis, MingID专用费率
 
     def __init__(self, private_key_wif: str = None, network: str = "mainnet"):
         self.network = network
@@ -75,8 +75,17 @@ class MingChat:
         receiver_hash160 = address_to_hash160(receiver_address)
         timestamp = int(time.time() * 1000)
         
+        # ── 方案B: DID_REGISTER 链上防重复检查 ──
+        if isinstance(msg_type, MsgType):
+            msg_type_val = msg_type
+        else:
+            msg_type_val = MsgType(msg_type)
+        
+        if msg_type_val == MsgType.DID_REGISTER:
+            self._check_did_register_allowed()
+        
         msg = Message(
-            msg_type=msg_type if isinstance(msg_type, MsgType) else MsgType(msg_type),
+            msg_type=msg_type_val,
             sender_hash160=self.hash160,
             receiver_hash160=receiver_hash160,
             timestamp=timestamp,
@@ -469,6 +478,45 @@ class MingChat:
             return resp.read().decode().strip()
 
     # ── 工具方法 ───────────────────────────────────────────
+
+    def _check_did_register_allowed(self):
+        """方案B: 链上检查 — 同一钱包地址是否已有活跃DID注册
+        通过WoC查该地址的DID_REGISTER消息历史。
+        """
+        address = self.address
+        if not address:
+            raise RuntimeError("钱包未初始化，无法检查DID注册")
+        try:
+            history = self._fetch_history(address, limit=100)
+            for tx in history:
+                txid = tx.get("tx_hash", "")
+                if not txid:
+                    continue
+                try:
+                    data = self._fetch_op_return(txid)
+                    if not data:
+                        continue
+                    from .protocol import parse_op_return_data
+                    msg = parse_op_return_data(data)
+                    if msg and msg.msg_type == MsgType.DID_REGISTER:
+                        # 检查消息是否来自本钱包（sender_hash160匹配）
+                        if msg.sender_hash160 == self.hash160:
+                            raise RuntimeError(
+                                f"链上已存在本钱包的DID注册 (txid: {txid[:20]}...)。"
+                                f"同一BSV地址只能注册一个DID。如要重新注册，请先吊销旧DID。"
+                            )
+                except RuntimeError:
+                    raise
+                except Exception:
+                    continue  # 解析失败跳过
+        except RuntimeError:
+            raise
+        except Exception as e:
+            # WoC API出错时，降级为只检查本地（方案A）
+            import logging
+            logging.getLogger("mingchat").warning(
+                f"链上DID检查失败 (WoC API错误)，仅依赖本地检查: {e}"
+            )
 
     def get_balance(self) -> int:
         """获取地址余额（satoshis）"""

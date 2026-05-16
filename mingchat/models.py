@@ -30,6 +30,10 @@ class MsgType(IntEnum):
     DID_REGISTER = 0x20    # v0.3: 铭识DID注册
     DID_UPDATE = 0x21      # v0.3: 铭识DID更新
     DID_REVOKE = 0x22      # v0.3: 铭识DID吊销
+    # ── 信誉系统 (v0.3.2) ──
+    REPUTATION_SCORE = 0x30  # 评分
+    REPUTATION_REVIEW = 0x31 # 评语
+    REPUTATION_BOND = 0x32   # 质押
     ERROR = 0xFF
 
     @classmethod
@@ -284,7 +288,7 @@ class TaskDisputePayload:
 @dataclass
 class DIDDocument:
     """铭识DID文档"""
-    did: str                              # did:bsv:{txid}
+    did: str                              # did:bsv:{hash160(controller_pk)[:40]}
     controller_pk: str = ""               # 控制者压缩公钥 hex
     auth_pk: str = ""                     # 操作公钥 hex
     service_endpoint: str = ""
@@ -293,6 +297,11 @@ class DIDDocument:
     profile_description: str = ""
     profile_version: str = ""
     controller_sig: str = ""              # 控制者签名
+    # ── 身份等级 (v0.3.2) ──
+    identity_level: int = 0               # 0=匿名 1=邮箱 2=企业 3=个人KYC 4=政府
+    kyc_hash: str = ""                    # sha256(KYC机构签名+实名信息)，可选
+    kyc_provider: str = ""                # KYC机构DID或URL
+    license_ref: str = ""                 # 牌照/许可证引用
     # 链上元数据
     registration_txid: str = ""
     update_seq: int = 1

@@ -27,13 +27,18 @@ from mingchat import MingChat, Message, MsgType
 from mingchat.protocol import hash160_to_address, address_to_hash160
 from mingchat.bsv_tools import privkey_to_wif, fetch_utxos
 from mingchat.spv import SpvListener
+from mingchat.reputation import ReputationStore, ReputationScore, ReputationBond
 
 # ── 配置 ──
 PRIV_HEX = os.environ.get("MINGCHAT_PRIV_HEX")
 PORT = int(os.environ.get("BRIDGE_PORT", "8900"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+LARK_APP_ID = os.environ.get("LARK_APP_ID", "")
+LARK_APP_SECRET = os.environ.get("LARK_APP_SECRET", "")
+LARK_CHAT_ID = os.environ.get("LARK_CHAT_ID", "")
 DATA_DIR = Path(os.environ.get("BRIDGE_DATA_DIR", str(Path.home() / ".mingchat" / "bridge")))
 INBOX_FILE = DATA_DIR / "inbox.json"
+REP_FILE = DATA_DIR / "reputation.json"
 CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / "bridge.log"
 
@@ -57,6 +62,20 @@ _listener = None
 _client = None
 _start_time = time.time()
 _message_count = 0
+_rep_store = ReputationStore()
+
+# ── 信誉数据持久化 ──
+def _load_rep_store() -> ReputationStore:
+    if REP_FILE.exists():
+        try:
+            data = json.loads(REP_FILE.read_text())
+            return ReputationStore.from_dict(data)
+        except Exception:
+            return ReputationStore()
+    return ReputationStore()
+
+def _save_rep_store():
+    REP_FILE.write_text(json.dumps(_rep_store.to_dict(), ensure_ascii=False, indent=2))
 
 
 # ── 收件箱操作 ──
@@ -97,6 +116,58 @@ def _save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
+# ── 飞书消息推送 ──
+def _push_to_lark(entry: dict):
+    """通过飞书API推送新消息通知"""
+    if not (LARK_APP_ID and LARK_APP_SECRET and LARK_CHAT_ID):
+        return
+    try:
+        # 获取tenant_access_token
+        import urllib.request
+        token_req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            data=json.dumps({
+                "app_id": LARK_APP_ID,
+                "app_secret": LARK_APP_SECRET,
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(token_req, timeout=5) as resp:
+            token_data = json.loads(resp.read())
+        access_token = token_data.get("tenant_access_token", "")
+        if not access_token:
+            return
+
+        # 构造消息内容
+        text = (
+            f"📩 铭信新消息\n"
+            f"来自: {entry['from']}\n"
+            f"类型: {entry['type']}\n"
+            f"内容: {entry['content'][:200]}\n"
+            f"TXID: {entry['txid'][:20]}..."
+        )
+
+        # 发送消息到飞书
+        msg_req = urllib.request.Request(
+            f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+            data=json.dumps({
+                "receive_id": LARK_CHAT_ID,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}),
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(msg_req, timeout=5) as resp:
+            log.info(f"飞书推送成功")
+    except Exception as e:
+        log.warning(f"飞书推送失败: {e}")
+
+
 # ── SPV监听回调 ──
 def _on_new_message(msg: Message):
     sender = hash160_to_address(msg.sender_hash160)
@@ -115,6 +186,9 @@ def _on_new_message(msg: Message):
     _append_to_inbox(entry)
     log.info(f"收到消息: from={entry['from'][:16]}... type={entry['type']} txid={msg.txid[:16]}...")
 
+    # 飞书推送
+    _push_to_lark(entry)
+
     # webhook推送
     if _webhook_url:
         try:
@@ -129,6 +203,45 @@ def _on_new_message(msg: Message):
             log.info(f"webhook推送成功: {_webhook_url[:40]}...")
         except Exception as e:
             log.warning(f"webhook推送失败: {e}")
+
+    # ── 信誉数据自动收集 ──
+    global _rep_store
+    if msg.msg_type == MsgType.REPUTATION_SCORE:
+        try:
+            payload_data = json.loads(msg.payload)
+            rep = payload_data.get("rep", payload_data)
+            target = rep.get("target", "")
+            if target:
+                _rep_store.add_score(target, {
+                    "rater": hash160_to_address(msg.sender_hash160),
+                    "score": rep.get("score", 0),
+                    "dims": rep.get("dims", {}),
+                    "tx_type": rep.get("tx_type", ""),
+                    "relates_to": rep.get("relates_to", ""),
+                    "timestamp": msg.timestamp,
+                    "txid": msg.txid,
+                })
+                _save_rep_store()
+                log.info(f"信誉评分已收集: target={target[:40]}... score={rep.get('score')}")
+        except Exception as e:
+            log.warning(f"信誉评分解析失败: {e}")
+
+    elif msg.msg_type == MsgType.REPUTATION_BOND:
+        try:
+            payload_data = json.loads(msg.payload)
+            target = payload_data.get("target_did", "")
+            if target:
+                _rep_store.add_bond(target, {
+                    "action": payload_data.get("action", "lock"),
+                    "amount": payload_data.get("amount", 0),
+                    "sender": hash160_to_address(msg.sender_hash160),
+                    "timestamp": msg.timestamp,
+                    "txid": msg.txid,
+                })
+                _save_rep_store()
+                log.info(f"信誉质押已记录: target={target[:40]}... amount={payload_data.get('amount')}")
+        except Exception as e:
+            log.warning(f"信誉质押解析失败: {e}")
 
 
 # ── 初始化监听器 ──
@@ -262,6 +375,42 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "webhook_url": _webhook_url or None,
             })
 
+        elif path.startswith("/reputation/"):
+            # 解析路径: /reputation/{did}/scores 或 /reputation/{did}/bonds 或 /reputation/{did}/stats
+            parts = path.split("/")
+            if len(parts) < 3:
+                self._json({"error": "路径格式: /reputation/{did}/{endpoint}"}, 400)
+                return
+            did = parts[2]
+            endpoint = parts[3] if len(parts) > 3 else "stats"
+
+            # 从DID反查hash160 => 从链上收集信誉数据
+            # 如果是/repuation/{did} 带limit参数，返回原始评分数据
+            if endpoint == "scores":
+                scores = _rep_store.get_scores(did)
+                limit = int(parse_qs(parsed.query).get("limit", [50])[0])
+                self._json({
+                    "did": did,
+                    "total": len(scores),
+                    "scores": scores[-limit:][::-1],  # 最新在前
+                })
+            elif endpoint == "bonds":
+                bonds = _rep_store.get_bonds(did)
+                self._json({
+                    "did": did,
+                    "total": len(bonds),
+                    "bonds": bonds[::-1],  # 最新在前
+                })
+            elif endpoint == "stats":
+                # 只返回原始数据统计（不做加权计算）
+                stats = _rep_store.get_stats(did)
+                self._json({
+                    "status": "ok",
+                    **stats,
+                })
+            else:
+                self._json({"error": f"未知端点: {endpoint}"}, 400)
+
         else:
             self._json({"error": f"unknown path: {path}"}, 404)
 
@@ -335,10 +484,14 @@ def main():
 
     # 加载webhook配置
     cfg = _load_config()
-    global _webhook_url
+    global _webhook_url, _rep_store
     if cfg.get("webhook_url"):
         _webhook_url = cfg["webhook_url"]
         log.info(f"已加载webhook: {_webhook_url[:40]}...")
+
+    # 加载信誉数据
+    _rep_store = _load_rep_store()
+    log.info(f"已加载信誉数据: {len(_rep_store._scores)}个DID的评分记录")
 
     # 初始化监听器
     ok = init_listener()
