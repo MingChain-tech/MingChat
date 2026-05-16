@@ -10,7 +10,10 @@ import hashlib
 import struct
 import json
 import urllib.request
+import logging
 from typing import Optional, List, Dict, Tuple
+
+log = logging.getLogger("mingchat.spv")
 
 from .models import Message
 from .protocol import (
@@ -199,9 +202,52 @@ def extract_op_return(raw_tx: bytes) -> Optional[bytes]:
         else:
             continue
 
-        return data
-
+        return data  # 只返回第一个OP_RETURN
     return None
+
+
+def extract_msg_fee(raw_tx: bytes, target_hash160: bytes) -> int:
+    """从原始交易中提取发给目标地址的金额（消息费）
+    
+    遍历所有P2PKH输出，找到发给target_hash160的金额。
+    """
+    pos = 4  # skip version
+    # inputs
+    input_count = raw_tx[pos]
+    pos += 1
+    for _ in range(input_count):
+        pos += 36
+        script_len = raw_tx[pos]
+        pos += 1 + script_len + 4
+
+    # outputs
+    output_count = raw_tx[pos]
+    pos += 1
+    for _ in range(output_count):
+        value = struct.unpack_from("<q", raw_tx, pos)[0]
+        if value <= 0:
+            pos += 8
+            script_len = struct.unpack_from("<H", raw_tx, pos + 8)[0]
+            pos += 10 + script_len
+            continue
+        pos += 8
+        script_len = struct.unpack_from("<H", raw_tx, pos)[0]
+        pos += 2
+        script = raw_tx[pos:pos + script_len]
+        pos += script_len
+
+        # P2PKH: OP_DUP OP_HASH160 <20B hash160> OP_EQUALVERIFY OP_CHECKSIG
+        if (len(script) == 25
+            and script[0] == 0x76  # OP_DUP
+            and script[1] == 0xa9  # OP_HASH160
+            and script[2] == 0x14  # push 20 bytes
+            and script[-2] == 0x88  # OP_EQUALVERIFY
+            and script[-1] == 0xac  # OP_CHECKSIG
+        ):
+            h160 = script[3:23]
+            if h160 == target_hash160:
+                return value
+    return 0
 
 
 # ── WoC辅助函数（验证用） ────────────────────────
@@ -252,8 +298,9 @@ from dataclasses import dataclass
 from typing import Set, Callable
 
 
-POLL_INTERVAL = 15          # 轮询间隔（秒）
-MIN_CONFIRMATIONS = 1          # 最少确认数（1即上链即可）
+INITIAL_SCAN_BLOCKS = 50     # 首次扫描地址历史涉及的最新区块数（仅用于减少首次扫描范围）
+POLL_INTERVAL = 15            # 轮询间隔（秒）
+MIN_CONFIRMATIONS = 1         # 最少确认数（1即上链即可）
 INBOX_DIR = Path.home() / ".mingchat"
 
 
@@ -371,33 +418,34 @@ class SpvListener:
             return {"verified": False, "error": str(e)}
 
     def scan_once(self) -> int:
-        """执行一次扫描（首次全量扫历史，后续只扫最新块）"""
+        """通过地址历史扫描铭信消息
+        
+        只扫自己地址的交易历史（高效），不复用token。
+        广播类/其他Agent指向我们的消息通过 /notify-tx 端点补全。
+        """
         try:
             tip = woc_get("/chain/info")
             tip_height = tip.get("blocks", tip.get("height", 0))
             if isinstance(tip_height, str):
                 tip_height = int(tip_height)
 
-            # 先拉address history，获取有交易的height
+            results = []
             from .bsv_tools import hash160_to_address
             addr = hash160_to_address(self.target_hash160)
             history = woc_get(f"/address/{addr}/history?limit=50")
             if not history:
                 return 0
 
-            # 增量模式：跳过已见过的交易
             seen = self._seen_txids.copy()
             new_txs = [tx for tx in history if tx["tx_hash"] not in seen]
             if not new_txs:
+                self._cached_tip_height = tip_height
                 return 0
 
-            results = []
-            # 首次启动扫历史有交易的height，后续增量扫
-            target_heights = set(tx["height"] for tx in new_txs
-                                 if tip_height - tx["height"] + 1 >= MIN_CONFIRMATIONS)
-
-            # 增量模式：之后只扫最新区块去重
-            self._cached_tip_height = tip_height
+            target_heights = set(
+                tx["height"] for tx in new_txs
+                if tip_height - tx["height"] + 1 >= MIN_CONFIRMATIONS
+            )
 
             for height in sorted(target_heights, reverse=True):
                 try:
@@ -405,70 +453,109 @@ class SpvListener:
                     block_hash = block_data.get("hash", "")
                     if not block_hash:
                         continue
-
-                    confirmations = tip_height - height + 1
-
-                    # 获取当前height的relevant txids
+                    txids = woc_get_block_txids(block_hash)
+                    if not txids:
+                        continue
+                    merkle_root = block_data.get("merkleroot", "")
                     relevant = [tx["tx_hash"] for tx in new_txs if tx["height"] == height]
                     if not relevant:
                         continue
 
-                    # 获取区块完整tx列表用于Merkle证明
-                    txids = woc_get_block_txids(block_hash)
-                    if not txids:
-                        continue
-
-                    merkle_root = block_data.get("merkleroot", "")
-
                     for txid in relevant:
                         if txid in self._seen_txids:
                             continue
-
                         try:
                             tx_hex = woc_get_text(f"/tx/{txid}/hex")
                         except Exception:
                             continue
-
                         if not tx_hex:
                             continue
-
                         op_data = extract_op_return(bytes.fromhex(tx_hex))
                         if not op_data:
                             continue
-
                         msg = parse_op_return_data(op_data)
                         if not msg:
                             continue
-
+                        # 提取消息费（原始交易中发给我们的P2PKH金额）
+                        msg.msg_fee = extract_msg_fee(bytes.fromhex(tx_hex), self.target_hash160)
                         if txid not in txids:
                             continue
-
                         idx = txids.index(txid)
                         proof, root = build_merkle_proof(txids, idx)
-
                         if root != merkle_root:
                             continue
                         if not verify_merkle_proof(txid, proof, root):
                             continue
-
                         msg.txid = txid
                         self._seen_txids.add(txid)
-
                         if self._callback:
                             try:
                                 self._callback(msg)
                             except Exception:
                                 pass
-
                         self._append_to_inbox(msg)
                         results.append(msg)
-
                 except Exception:
                     continue
 
+            self._cached_tip_height = tip_height
+            if results:
+                log.info("SPV扫描: 发现 {} 条新消息".format(len(results)))
             return len(results)
+
         except Exception as e:
+            log.warning("SPV扫描异常: {}".format(e))
             return 0
+
+    def verify_tx_by_txid(self, txid: str) -> Optional[Message]:
+        """通过txid直接验证并添加一条消息（供/notify-tx端点使用）
+        
+        不需要扫地址历史，直接从WoC拉交易hex验证。"""
+        try:
+            if txid in self._seen_txids:
+                return None
+            tx_hex = woc_get_text(f"/tx/{txid}/hex")
+            if not tx_hex:
+                return None
+            op_data = extract_op_return(bytes.fromhex(tx_hex))
+            if not op_data:
+                return None
+            msg = parse_op_return_data(op_data)
+            if not msg:
+                return None
+            # 提取消息费
+            msg.msg_fee = extract_msg_fee(bytes.fromhex(tx_hex), self.target_hash160)
+            # 验证receiver是否匹配我们
+            if msg.receiver_hash160 != self.target_hash160 and msg.receiver_hash160 != b"\x00" * 20:
+                return None
+            # SPV验证
+            tx_info = woc_get(f"/tx/{txid}")
+            block_hash = tx_info.get("blockhash", "")
+            if not block_hash:
+                return None
+            txids = woc_get_block_txids(block_hash)
+            if not txids or txid not in txids:
+                return None
+            idx = txids.index(txid)
+            block = woc_get(f"/block/hash/{block_hash}")
+            merkle_root = block.get("merkleroot", "")
+            proof, root = build_merkle_proof(txids, idx)
+            if root != merkle_root:
+                return None
+            if not verify_merkle_proof(txid, proof, root):
+                return None
+            msg.txid = txid
+            self._seen_txids.add(txid)
+            if self._callback:
+                try:
+                    self._callback(msg)
+                except Exception:
+                    pass
+            self._append_to_inbox(msg)
+            return msg
+        except Exception as e:
+            log.warning("verify_tx_by_txid({}) 异常: {}".format(txid[:16], e))
+            return None
 
     def _poll_loop(self):
         while self._running:

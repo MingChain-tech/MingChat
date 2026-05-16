@@ -165,18 +165,28 @@ def _lark_push_batch():
 
     if len(batch) == 1:
         e = batch[0]
+        pri = e.get("priority", "free")
+        icon = _msg_priority_icon(pri)
+        fee = e.get("msg_fee", 0)
+        fee_str = f" ({fee} sat💰)" if fee > 0 else ""
         text = (
-            f"📩 铭信新消息\n"
+            f"{icon} 铭信新消息{fee_str}\n"
             f"来自: {e['from'][:12]}...\n"
             f"类型: {e['type']}\n"
             f"内容: {e['content'][:150]}\n"
             f"TXID: {e['txid'][:12]}..."
         )
     else:
+        # 按优先级排序显示
+        sorted_batch = sorted(batch, key=lambda x: {"high": 0, "medium": 1, "low": 2, "free": 3}.get(x.get("priority", "free"), 4))
         lines = [f"📮 铭信 {len(batch)} 条新消息"]
-        for e in batch:
-            summary = e['content'][:60].replace('\n', ' ')
-            lines.append(f"· [{e['type']}] {e['from'][:10]}... → {summary}")
+        for e in sorted_batch:
+            pri = e.get("priority", "free")
+            icon = _msg_priority_icon(pri)
+            fee = e.get("msg_fee", 0)
+            fee_str = f"({fee}sat)" if fee > 0 else ""
+            summary = e['content'][:50].replace('\n', ' ')
+            lines.append(f"· {icon} {e['from'][:10]}... {fee_str} {summary}")
         text = "\n".join(lines)
 
     import urllib.request
@@ -220,9 +230,61 @@ def _push_to_lark(entry: dict):
         _lark_batch.append(entry)
 
 
+def _push_to_lark_immediate(entry: dict):
+    """高优先级消息直接推送（不经过队列）"""
+    if not (LARK_APP_ID and LARK_APP_SECRET and LARK_CHAT_ID):
+        return
+    fee = entry.get("msg_fee", 0)
+    text = (
+        f"🔴 VIP 铭信消息 (附带 {fee} sat 💰)\n"
+        f"来自: {entry['from'][:12]}...\n"
+        f"类型: {entry['type']}\n"
+        f"内容: {entry['content'][:150]}\n"
+        f"TXID: {entry['txid'][:12]}..."
+    )
+    import urllib.request
+    try:
+        access_token = _lark_refresh_token()
+        if not access_token:
+            return
+        msg_req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+            data=json.dumps({
+                "receive_id": LARK_CHAT_ID,
+                "msg_type": "text",
+                "content": json.dumps({"text": text}),
+            }).encode(),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(msg_req, timeout=5) as resp:
+            log.info(f"飞书高优推送成功 (fee={fee})")
+    except Exception as e:
+        log.warning(f"飞书高优推送失败: {e}")
+
+
+def _msg_priority(fee: int) -> str:
+    """消息费 → 优先级标签"""
+    if fee <= 0:
+        return "free"
+    elif fee < 100:
+        return "low"
+    elif fee < 1000:
+        return "medium"
+    else:
+        return "high"
+
+def _msg_priority_icon(priority: str) -> str:
+    return {"free": "🟢", "low": "🔵", "medium": "🟡", "high": "🔴"}.get(priority, "🟢")
+
+
 # ── SPV监听回调 ──
 def _on_new_message(msg: Message):
     sender = hash160_to_address(msg.sender_hash160)
+    priority = _msg_priority(msg.msg_fee)
     entry = {
         "type": msg.msg_type.to_str(),
         "from": sender,
@@ -234,12 +296,18 @@ def _on_new_message(msg: Message):
                                                   if msg.timestamp > 100000000000
                                                   else msg.timestamp)),
         "txid": msg.txid,
+        "msg_fee": msg.msg_fee,
+        "priority": priority,
     }
     _append_to_inbox(entry)
-    log.info(f"收到消息: from={entry['from'][:16]}... type={entry['type']} txid={msg.txid[:16]}...")
+    log.info(f"收到消息: from={entry['from'][:16]}... type={entry['type']} fee={msg.msg_fee} sat pri={priority} txid={msg.txid[:16]}...")
 
-    # 飞书推送
-    _push_to_lark(entry)
+    # 飞书推送（高优先级即时推，中低合并）
+    if priority == "high":
+        # 高优先级：跳过队列，直接推送
+        _push_to_lark_immediate(entry)
+    else:
+        _push_to_lark(entry)
 
     # webhook推送
     if _webhook_url:
@@ -400,19 +468,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
             limit = int(parse_qs(parsed.query).get("limit", [20])[0])
             unread = parse_qs(parsed.query).get("unread", ["false"])[0].lower() == "true"
             mark_read = parse_qs(parsed.query).get("mark_read", ["true"])[0].lower() == "true"
+            priority_filter = parse_qs(parsed.query).get("priority", [""])[0]
+            min_fee = int(parse_qs(parsed.query).get("min_fee", ["0"])[0])
 
             with _inbox_lock:
                 inbox = _load_inbox()
-                result = inbox[-limit:] if limit > 0 else inbox
-                result = result[::-1]  # 最新在前
+                result = list(inbox)  # 复制
+                # 筛选
+                if priority_filter:
+                    allowed = [p.strip() for p in priority_filter.split(",")]
+                    result = [m for m in result if m.get("priority", "free") in allowed]
+                if min_fee > 0:
+                    result = [m for m in result if m.get("msg_fee", 0) >= min_fee]
                 if unread:
                     result = [m for m in result if m.get("read") != True]
+                result = result[-limit:] if limit > 0 else result
+                result = result[::-1]  # 最新在前
                 if mark_read:
-                    inbox_copy = _load_inbox()
-                    for m in inbox_copy:
-                        if m in result:
+                    for m in inbox:
+                        if m.get("read") != True:
                             m["read"] = True
-                    _save_inbox(inbox_copy)
+                    _save_inbox(inbox)
 
             self._json({
                 "status": "ok",
@@ -479,12 +555,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             to_addr = body.get("to_address", "")
             content = body.get("content", "")
             msg_type_str = body.get("msg_type", "TEXT")
+            msg_fee = int(body.get("msg_fee", "0"))
             if not to_addr or not content:
                 self._json({"error": "缺少 to_address 或 content"}, 400)
                 return
             try:
                 msg = _client.send(to_addr, content,
-                                   msg_type=MsgType.from_str(msg_type_str))
+                                   msg_type=MsgType.from_str(msg_type_str),
+                                   msg_fee=msg_fee)
                 self._json({
                     "status": "ok",
                     "txid": msg.txid,
@@ -513,6 +591,40 @@ class BridgeHandler(BaseHTTPRequestHandler):
             cfg.pop("webhook_url", None)
             _save_config(cfg)
             self._json({"status": "ok", "webhook_url": None})
+
+        elif path == "/notify-tx":
+            """其他Agent通知我们有发给我们的新消息"""
+            txid = body.get("txid", "")
+            if not txid:
+                self._json({"error": "缺少 txid"}, 400)
+                return
+            if not _listener:
+                self._json({"error": "Bridge未就绪"}, 503)
+                return
+            try:
+                msg = _listener.verify_tx_by_txid(txid)
+                if msg:
+                    self._json({"status": "ok", "txid": txid, "from": hash160_to_address(msg.sender_hash160)[:16]+"..."})
+                else:
+                    self._json({"status": "ignored", "reason": "txid已处理或不匹配"})
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
+
+        elif path == "/stats/msg-fee":
+            """消息费统计"""
+            with _inbox_lock:
+                inbox = _load_inbox()
+            total_fee = sum(m.get("msg_fee", 0) for m in inbox)
+            counts = {"free": 0, "low": 0, "medium": 0, "high": 0}
+            for m in inbox:
+                p = m.get("priority", "free")
+                counts[p] = counts.get(p, 0) + 1
+            self._json({
+                "status": "ok",
+                "total_fee_received": total_fee,
+                "total_messages": len(inbox),
+                "count_by_priority": counts,
+            })
 
         else:
             self._json({"error": f"unknown path: {path}"}, 404)
@@ -555,12 +667,15 @@ def main():
     ok = init_listener()
     if ok:
         log.info(f"钱包: {_client.address}")
-        # 首次全量扫描
-        try:
-            n = _listener.scan_once()
-            log.info(f"首次扫描: 发现 {n} 条新消息")
-        except Exception as e:
-            log.warning(f"首次扫描异常: {e}")
+        # 后台线程执行首次全量扫描（不阻塞HTTP）
+        def _initial_scan():
+            try:
+                n = _listener.scan_once()
+                log.info(f"首次扫描: 发现 {n} 条新消息")
+            except Exception as e:
+                log.warning(f"首次扫描异常: {e}")
+        t = threading.Thread(target=_initial_scan, daemon=True)
+        t.start()
         # 启动后台监听
         start_listener()
         log.info("SPV监听已启动")

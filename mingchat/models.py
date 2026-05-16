@@ -163,6 +163,7 @@ class Message:
     payload_hash: bytes = b'' * 32         # 32B SHA256
     payload: bytes = b''                   # 变长消息体
     txid: str = ""
+    msg_fee: int = 0                        # 消息附带BSV（sat），发送方决定
 
     def __post_init__(self):
         if not self.timestamp:

@@ -62,8 +62,17 @@ class MingChat:
     # ── 发送消息 ───────────────────────────────────────────
 
     def send(self, receiver_address: str, body: Union[str, bytes], 
-             msg_type: Union[MsgType, int] = MsgType.TEXT) -> Message:
-        """发送链上消息，返回Message对象（含txid）"""
+             msg_type: Union[MsgType, int] = MsgType.TEXT,
+             msg_fee: int = 0) -> Message:
+        """发送链上消息，返回Message对象（含txid）
+        
+        Args:
+            receiver_address: 接收方地址
+            body: 消息内容
+            msg_type: 消息类型
+            msg_fee: 消息附带BSV（sat），发送方决定。接收方按金额过滤。
+                     0=不附带UTXO（老版本兼容）
+        """
         if not self._privkey_bytes:
             raise RuntimeError("需要私钥才能发送消息")
         
@@ -90,10 +99,11 @@ class MingChat:
             receiver_hash160=receiver_hash160,
             timestamp=timestamp,
             payload=body_bytes,
+            msg_fee=msg_fee,  # 保存消息费
         )
         
-        # 构建OP_RETURN交易并广播
-        txid = self._broadcast_op_return(msg)
+        # 构建OP_RETURN交易并广播（传入msg_fee和receiver_address）
+        txid = self._broadcast_op_return(msg, msg_fee=msg_fee, receiver_address=receiver_address)
         msg.txid = txid
         
         return msg
@@ -248,8 +258,13 @@ class MingChat:
             except Exception as e:
                 print(f"回调错误: {e}")
 
-    def _broadcast_op_return(self, msg: Message) -> str:
-        """构建并广播OP_RETURN交易 (使用bsv-sdk)"""
+    def _broadcast_op_return(self, msg: Message,
+                             msg_fee: int = 0,
+                             receiver_address: str = "") -> str:
+        """构建并广播OP_RETURN交易 (使用bsv-sdk)
+        
+        如果 msg_fee > 0，附加一个P2PKH输出到接收方地址。
+        """
         from bsv.transaction import Transaction, TransactionInput, TransactionOutput
         from bsv.script.type import OpReturn, P2PKH
         from bsv.constants import SIGHASH
@@ -274,8 +289,9 @@ class MingChat:
         privkey = PrivateKey.from_hex(self._privkey_bytes.hex())
 
         # 构建交易
+        total_out = msg_fee  # OP_RETURN输出=0
         fee = self.MINING_FEE
-        change = utxo["satoshis"] - fee
+        change = utxo["satoshis"] - fee - total_out
 
         tx = Transaction()
         tx.add_input(TransactionInput(
@@ -290,17 +306,26 @@ class MingChat:
             locking_script=op_return.lock(pushdatas=[op_data]),
         ))
 
-        # 找零
-        if change > 546:
-            p2pkh = P2PKH()
+        # 消息费输出（发到接收方地址）
+        if msg_fee > 0 and receiver_address:
+            fee_p2pkh = P2PKH()
             tx.add_output(TransactionOutput(
-                satoshis=change,
-                locking_script=p2pkh.lock(self.address),
+                satoshis=msg_fee,
+                locking_script=fee_p2pkh.lock(receiver_address),
             ))
 
-        # 签名
+        # 找零
+        if change > 546:
+            change_p2pkh = P2PKH()
+            tx.add_output(TransactionOutput(
+                satoshis=change,
+                locking_script=change_p2pkh.lock(self.address),
+            ))
+
+        # 签名（用标准P2PKH解锁）
+        sign_p2pkh = P2PKH()
         tx.inputs[0].sighash = SIGHASH.FORKID | SIGHASH.ALL
-        unlock = p2pkh.unlock(privkey)
+        unlock = sign_p2pkh.unlock(privkey)
         tx.inputs[0].unlocking_script = unlock.sign(tx, 0)
 
         # 广播
