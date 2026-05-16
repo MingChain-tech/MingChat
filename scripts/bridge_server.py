@@ -25,6 +25,7 @@ from typing import Optional, Callable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mingchat import MingChat, Message, MsgType
 from mingchat.protocol import hash160_to_address, address_to_hash160
+from mingchat.bsv_tools import privkey_to_wif, fetch_utxos
 from mingchat.spv import SpvListener
 
 # ── 配置 ──
@@ -137,7 +138,17 @@ def init_listener():
         log.warning("未设置 MINGCHAT_PRIV_HEX，无法初始化和发送消息")
         return False
 
-    _client = MingChat(private_key_wif=PRIV_HEX)
+    # PRIV_HEX可能是hex格式(64位)或WIF格式
+    priv_key_for_client = PRIV_HEX
+    if len(PRIV_HEX) == 64:
+        try:
+            pk = bytes.fromhex(PRIV_HEX)
+            priv_key_for_client = privkey_to_wif(pk)
+        except Exception as e:
+            log.error(f"私钥hex转换失败: {e}")
+            return False
+
+    _client = MingChat(private_key_wif=priv_key_for_client)
     log.info(f"钱包地址: {_client.address}")
 
     hash160 = address_to_hash160(_client.address)

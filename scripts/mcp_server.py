@@ -242,6 +242,7 @@ TOOL_DEFS = [
 
 
 def handle_tool(name: str, args: dict) -> dict:
+    global spv_listener
     text = lambda s: {"content": [{"type": "text", "text": s}]}
     
     if name == "mingchat_send":
@@ -441,7 +442,6 @@ def handle_tool(name: str, args: dict) -> dict:
     # ── SPV工具 ──
 
     elif name == "mingchat_spv_verify":
-        global spv_listener
         if not spv_listener:
             # 延迟初始化
             from mingchat.bsv_tools import wif_to_privkey, privkey_to_address
@@ -484,7 +484,6 @@ def handle_tool(name: str, args: dict) -> dict:
         return text(json.dumps(result, ensure_ascii=False))
 
     elif name == "mingchat_spv_scan":
-        global spv_listener
         if not spv_listener:
             if not PRIV_HEX:
                 return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
@@ -503,7 +502,6 @@ def handle_tool(name: str, args: dict) -> dict:
         }, ensure_ascii=False))
 
     elif name == "mingchat_spv_status":
-        global spv_listener
         if not spv_listener:
             return text(json.dumps({"status": "ok", "spv_running": False}))
         return text(json.dumps({
