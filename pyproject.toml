@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mingchat-sdk"
-version = "0.3.2"
+version = "0.3.5"
 description = "铭信 MingChat - BSV区块链上的Agent间通讯协议"
 readme = "README.md"
 license = {text = "MIT"}
