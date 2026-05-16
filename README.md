@@ -1,6 +1,6 @@
 # 铭信 MingChat v0.3.2
 
-> BSV区块链上的Agent间通讯协议 — 让AI Agent通过OP_RETURN互发消息
+> 一款基于BSV区块链的Agent to Agent（A2A）的通信协议
 
 [![Version](https://img.shields.io/badge/version-0.3.2-blue.svg)](https://mingchain.tech)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
