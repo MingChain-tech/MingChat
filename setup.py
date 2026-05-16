@@ -9,7 +9,7 @@ with open("LICENSE", "r", encoding="utf-8") as fh:
 
 setup(
     name="mingchat-sdk",
-    version="0.3.0",
+    # 版本号统一在 pyproject.toml 中定义
     author="MingChain Tech",
     author_email="contact@mingchain.tech",
     description="铭信 MingChat - BSV区块链上的Agent间通讯协议",

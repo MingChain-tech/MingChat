@@ -116,13 +116,20 @@ def _save_config(cfg: dict):
     CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
-# ── 飞书消息推送 ──
-def _push_to_lark(entry: dict):
-    """通过飞书API推送新消息通知"""
-    if not (LARK_APP_ID and LARK_APP_SECRET and LARK_CHAT_ID):
-        return
+# ── 飞书批量推送 ──
+_lark_token = None
+_lark_token_expires = 0
+_lark_batch = []
+_lark_batch_lock = threading.Lock()
+_lark_interval = 8  # 秒，聚合窗口
+
+def _lark_refresh_token():
+    """缓存复用tenant_access_token"""
+    global _lark_token, _lark_token_expires
+    now = time.time()
+    if _lark_token and now < _lark_token_expires - 60:
+        return _lark_token
     try:
-        # 获取tenant_access_token
         import urllib.request
         token_req = urllib.request.Request(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
@@ -135,22 +142,47 @@ def _push_to_lark(entry: dict):
         )
         with urllib.request.urlopen(token_req, timeout=5) as resp:
             token_data = json.loads(resp.read())
-        access_token = token_data.get("tenant_access_token", "")
-        if not access_token:
-            return
+        _lark_token = token_data.get("tenant_access_token", "")
+        _lark_token_expires = now + token_data.get("expire", 3600)
+        return _lark_token
+    except Exception as e:
+        log.warning(f"飞书token刷新失败: {e}")
+        return _lark_token or ""
 
-        # 构造消息内容
+
+def _lark_push_batch():
+    """推送累积的一批消息（只推一次飞书API）"""
+    global _lark_batch
+    access_token = _lark_refresh_token()
+    if not access_token:
+        return
+
+    with _lark_batch_lock:
+        if not _lark_batch:
+            return
+        batch = _lark_batch[:]
+        _lark_batch = []
+
+    if len(batch) == 1:
+        e = batch[0]
         text = (
             f"📩 铭信新消息\n"
-            f"来自: {entry['from']}\n"
-            f"类型: {entry['type']}\n"
-            f"内容: {entry['content'][:200]}\n"
-            f"TXID: {entry['txid'][:20]}..."
+            f"来自: {e['from'][:12]}...\n"
+            f"类型: {e['type']}\n"
+            f"内容: {e['content'][:150]}\n"
+            f"TXID: {e['txid'][:12]}..."
         )
+    else:
+        lines = [f"📮 铭信 {len(batch)} 条新消息"]
+        for e in batch:
+            summary = e['content'][:60].replace('\n', ' ')
+            lines.append(f"· [{e['type']}] {e['from'][:10]}... → {summary}")
+        text = "\n".join(lines)
 
-        # 发送消息到飞书
+    import urllib.request
+    try:
         msg_req = urllib.request.Request(
-            f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
             data=json.dumps({
                 "receive_id": LARK_CHAT_ID,
                 "msg_type": "text",
@@ -163,9 +195,29 @@ def _push_to_lark(entry: dict):
             method="POST",
         )
         with urllib.request.urlopen(msg_req, timeout=5) as resp:
-            log.info(f"飞书推送成功")
+            log.info(f"飞书推送成功 ({len(batch)}条合并)")
     except Exception as e:
         log.warning(f"飞书推送失败: {e}")
+        # 推送失败时把消息放回去，避免丢消息
+        with _lark_batch_lock:
+            _lark_batch = batch + _lark_batch
+            if len(_lark_batch) > 100:
+                _lark_batch = _lark_batch[:100]
+
+
+def _lark_push_worker():
+    """后台线程：每隔_lark_interval秒检查并推送"""
+    while True:
+        time.sleep(_lark_interval)
+        _lark_push_batch()
+
+
+def _push_to_lark(entry: dict):
+    """入队一条消息（不立即推送）"""
+    if not (LARK_APP_ID and LARK_APP_SECRET and LARK_CHAT_ID):
+        return
+    with _lark_batch_lock:
+        _lark_batch.append(entry)
 
 
 # ── SPV监听回调 ──
@@ -492,6 +544,12 @@ def main():
     # 加载信誉数据
     _rep_store = _load_rep_store()
     log.info(f"已加载信誉数据: {len(_rep_store._scores)}个DID的评分记录")
+
+    # 启动飞书批量推送后台线程
+    if LARK_APP_ID and LARK_APP_SECRET and LARK_CHAT_ID:
+        t = threading.Thread(target=_lark_push_worker, daemon=True)
+        t.start()
+        log.info("飞书批量推送已启动 (聚合窗口{}s)".format(_lark_interval))
 
     # 初始化监听器
     ok = init_listener()
