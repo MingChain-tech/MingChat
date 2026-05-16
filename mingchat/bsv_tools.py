@@ -299,8 +299,8 @@ def broadcast_tx(tx_hex: str) -> str:
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            return result.get("txid", "")
+            result = resp.read().decode().strip().strip('"')
+            return result
     except Exception as e:
         raise RuntimeError(f"Broadcast failed: {e}")
 

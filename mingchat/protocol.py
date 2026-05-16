@@ -94,7 +94,7 @@ def _deserialize_v0_2_compat(data: bytes) -> Optional[ModelMessage]:
         msg_type = MsgType(data[5])
     except ValueError:
         msg_type = MsgType.TEXT
-    
+
     return ModelMessage(
         msg_type=msg_type,
         version=version,
@@ -104,6 +104,30 @@ def _deserialize_v0_2_compat(data: bytes) -> Optional[ModelMessage]:
         task=TaskFields.empty(),         # v0.2无任务字段
         audit=AuditFields.empty(),       # v0.2无审计字段
         payload_hash=data[54:86],
+        payload=data[HEADER_SIZE_V0_2:] if len(data) > HEADER_SIZE_V0_2 else b'',
+    )
+
+
+def _deserialize_v0_1_compat(data: bytes) -> Optional[ModelMessage]:
+    """将v0.1（Phase1）消息解析为v0.3 Message对象
+    v0.1: 86B头 (magic 4B + ver 1B + type 1B + sender 20B + receiver 20B + ts 8B + msg_id 32B) + payload
+    注意：v0.1 没有task/audit字段，payload_hash字段实际是msg_id
+    """
+    from .models import MsgType, TaskFields, AuditFields
+    try:
+        msg_type = MsgType(data[5])
+    except ValueError:
+        msg_type = MsgType.TEXT
+
+    return ModelMessage(
+        msg_type=msg_type,
+        version=0x01,
+        sender_hash160=data[6:26],
+        receiver_hash160=data[26:46],
+        timestamp=struct.unpack_from(">Q", data, 46)[0],
+        task=TaskFields.empty(),
+        audit=AuditFields.empty(),
+        payload_hash=data[54:86],     # v0.1 msg_id被当作payload_hash存着
         payload=data[HEADER_SIZE_V0_2:] if len(data) > HEADER_SIZE_V0_2 else b'',
     )
 
@@ -119,7 +143,7 @@ def build_op_return_data(msg: ModelMessage) -> bytes:
 
 
 def parse_op_return_data(data: bytes) -> Optional[ModelMessage]:
-    """解析OP_RETURN数据（自动识别v0.2/v0.3）"""
+    """解析OP_RETURN数据（自动识别v0.1/v0.2/v0.3）"""
     if len(data) < HEADER_SIZE_V0_2:
         return None
     magic = struct.unpack_from(">I", data, 0)[0]
@@ -132,6 +156,8 @@ def parse_op_return_data(data: bytes) -> Optional[ModelMessage]:
         return deserialize_message_v0_3(data)
     elif version == 0x02:
         return _deserialize_v0_2_compat(data)
+    elif version == 0x01:
+        return _deserialize_v0_1_compat(data)
     return None
 
 

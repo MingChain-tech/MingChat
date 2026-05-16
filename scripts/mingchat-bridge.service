@@ -1,0 +1,33 @@
+[Unit]
+Description=铭信 MingChat Bridge - BSV链上Agent通讯守护进程
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/mingchat/scripts
+ExecStart=/usr/bin/python3 /root/mingchat/scripts/bridge_server.py
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# 环境变量
+Environment="MINGCHAT_PRIV_HEX="
+Environment="BRIDGE_PORT=8900"
+Environment="BRIDGE_DATA_DIR=/root/.mingchat/bridge"
+
+# 标准输出和错误都打到syslog
+StandardOutput=journal
+StandardError=journal
+
+# 安全设置
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target

@@ -73,7 +73,7 @@ class MingChat:
             body_bytes = body
         
         receiver_hash160 = address_to_hash160(receiver_address)
-        timestamp = int(time.time())
+        timestamp = int(time.time() * 1000)
         
         msg = Message(
             msg_type=msg_type if isinstance(msg_type, MsgType) else MsgType(msg_type),
@@ -240,26 +240,62 @@ class MingChat:
                 print(f"回调错误: {e}")
 
     def _broadcast_op_return(self, msg: Message) -> str:
-        """构建并广播OP_RETURN交易"""
+        """构建并广播OP_RETURN交易 (使用bsv-sdk)"""
+        from bsv.transaction import Transaction, TransactionInput, TransactionOutput
+        from bsv.script.type import OpReturn, P2PKH
+        from bsv.constants import SIGHASH
+        from bsv.keys import PrivateKey
+
         # 获取UTXO
         utxos = fetch_utxos(self.address)
         if not utxos:
             raise RuntimeError(f"地址 {self.address} 没有可用UTXO")
-        
+
         utxo = utxos[0]
-        
+
         # 序列化OP_RETURN数据 (v0.3)
         from .protocol import serialize_message_v0_3
         op_data = serialize_message_v0_3(msg)
-        
+
+        # 获取源交易
+        source_hex = self._fetch_raw(f"/tx/{utxo['txid']}/hex")
+        source_tx = Transaction.from_hex(source_hex)
+
+        # bsv-sdk私钥
+        privkey = PrivateKey.from_hex(self._privkey_bytes.hex())
+
         # 构建交易
-        tx = self._build_tx(utxo, op_data)
-        
+        fee = self.MINING_FEE
+        change = utxo["satoshis"] - fee
+
+        tx = Transaction()
+        tx.add_input(TransactionInput(
+            source_transaction=source_tx,
+            source_output_index=utxo["vout"],
+        ))
+
+        # OP_RETURN输出
+        op_return = OpReturn()
+        tx.add_output(TransactionOutput(
+            satoshis=0,
+            locking_script=op_return.lock(pushdatas=[op_data]),
+        ))
+
+        # 找零
+        if change > 546:
+            p2pkh = P2PKH()
+            tx.add_output(TransactionOutput(
+                satoshis=change,
+                locking_script=p2pkh.lock(self.address),
+            ))
+
         # 签名
-        signed_tx = self._sign_tx(tx, utxo)
-        
+        tx.inputs[0].sighash = SIGHASH.FORKID | SIGHASH.ALL
+        unlock = p2pkh.unlock(privkey)
+        tx.inputs[0].unlocking_script = unlock.sign(tx, 0)
+
         # 广播
-        txid = broadcast_tx(signed_tx)
+        txid = broadcast_tx(tx.hex())
         return txid
 
     def _build_tx(self, utxo: Dict, op_data: bytes) -> Dict:

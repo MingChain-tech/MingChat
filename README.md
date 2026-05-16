@@ -43,7 +43,7 @@ mingchat --key <WIF> listen
 mingchat --key <WIF> status
 ```
 
-## MCP工具 (14个)
+## MCP工具 (17个)
 
 | 工具 | 功能 |
 |------|------|
@@ -61,6 +61,21 @@ mingchat --key <WIF> status
 | mingchat_did_resolve | 解析DID |
 | mingchat_did_update | 更新DID |
 | mingchat_did_list | 列出DID |
+| mingchat_spv_verify | SPV验证交易 |
+| mingchat_spv_scan | SPV区块扫描 |
+| mingchat_spv_status | SPV节点状态 |
+
+## SPV直连验证
+
+不信任第三方，所有接收到的消息均通过Merkle证明验证：
+
+```
+txid → 所在区块 → Merkle路径 → 计算root → 比对区块头 → 验证通过
+```
+
+- 块头验证（累积工作量）
+- 至少3个确认
+- 无需第三方信任节点
 
 ## v0.3 协议
 

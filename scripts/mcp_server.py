@@ -16,7 +16,9 @@ from mingchat.models import (
 )
 from mingchat.task import MingTask, make_publish_payload, make_bid_payload, make_deliver_payload
 from mingchat.did import MingDID, make_did_document
-from mingchat.protocol import hash160_to_address
+from mingchat.protocol import hash160_to_address, address_to_hash160
+from mingchat.spv import build_merkle_proof, verify_merkle_proof, extract_op_return, verify_block_hash, bits_to_target, SpvListener, woc_get, woc_get_text, woc_get_block_txids
+from mingchat.spv_p2p import SpvP2PListener
 
 PRIV_HEX = os.environ.get("MINGCHAT_PRIV_HEX") or os.environ.get("MINGCHAT_PRIVATE_KEY")
 if not PRIV_HEX:
@@ -25,6 +27,7 @@ if not PRIV_HEX:
 client = MingChat(private_key_wif=PRIV_HEX) if PRIV_HEX else MingChat()
 task_mgr = MingTask()
 did_mgr = MingDID()
+spv_listener = None  # 延迟初始化
 
 INBOX_DIR = Path.home() / ".mingchat"
 INBOX_FILE = INBOX_DIR / "inbox.json"
@@ -212,6 +215,28 @@ TOOL_DEFS = [
                 "status": {"type": "string", "description": "筛选状态: active|revoked", "default": "active"},
             },
         },
+    },
+    # SPV验证
+    {
+        "name": "mingchat_spv_verify",
+        "description": "v0.3 SPV验证：验证交易是否在链上并属于特定区块",
+        "inputSchema": {
+            "type": "object",
+            "required": ["txid"],
+            "properties": {
+                "txid": {"type": "string", "description": "交易ID"},
+            },
+        },
+    },
+    {
+        "name": "mingchat_spv_scan",
+        "description": "v0.3 SPV扫描：执行一次区块扫描（Merkle验证），不需要第三方信任",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "mingchat_spv_status",
+        "description": "v0.3 SPV监听器状态",
+        "inputSchema": {"type": "object", "properties": {}},
     },
 ]
 
@@ -412,7 +437,81 @@ def handle_tool(name: str, args: dict) -> dict:
     elif name == "mingchat_did_list":
         dids = did_mgr.list_dids(status=args.get("status", "active"))
         return text(json.dumps({"status": "ok", "count": len(dids), "dids": dids}, ensure_ascii=False))
-    
+
+    # ── SPV工具 ──
+
+    elif name == "mingchat_spv_verify":
+        global spv_listener
+        if not spv_listener:
+            # 延迟初始化
+            from mingchat.bsv_tools import wif_to_privkey, privkey_to_address
+            from mingchat.protocol import address_to_hash160
+            if PRIV_HEX:
+                privkey = wif_to_privkey(PRIV_HEX)
+                addr = privkey_to_address(privkey)
+                h160 = address_to_hash160(addr)
+                spv_listener = SpvListener(target_hash160=h160)
+        if spv_listener:
+            result = spv_listener.verify_message(args["txid"])
+        else:
+            # 无私钥时只做基础验证
+            txid = args["txid"]
+            try:
+                tx_info = woc_get(f"/tx/{txid}")
+                block_hash = tx_info.get("blockhash", "")
+                if not block_hash:
+                    result = {"verified": False, "error": "交易尚未上链"}
+                else:
+                    txids = woc_get_block_txids(block_hash)
+                    if not txids or txid not in txids:
+                        result = {"verified": False, "error": "交易不在区块中"}
+                    else:
+                        idx = txids.index(txid)
+                        block = woc_get(f"/block/hash/{block_hash}")
+                        merkle_root = block.get("merkleroot", "")
+                        proof, computed_root = build_merkle_proof(txids, idx)
+                        verified = verify_merkle_proof(txid, proof, computed_root)
+                        result = {
+                            "verified": verified,
+                            "txid": txid,
+                            "block_hash": block_hash,
+                            "block_height": block.get("height", 0),
+                            "merkle_root": merkle_root,
+                            "proof_entries": len(proof),
+                        }
+            except Exception as e:
+                result = {"verified": False, "error": str(e)}
+        return text(json.dumps(result, ensure_ascii=False))
+
+    elif name == "mingchat_spv_scan":
+        global spv_listener
+        if not spv_listener:
+            if not PRIV_HEX:
+                return {"isError": True, "content": [{"type": "text", "text": "需要设置 MINGCHAT_PRIV_HEX"}]}
+            from mingchat.bsv_tools import wif_to_privkey, privkey_to_address
+            from mingchat.protocol import address_to_hash160
+            privkey = wif_to_privkey(PRIV_HEX)
+            addr = privkey_to_address(privkey)
+            h160 = address_to_hash160(addr)
+            spv_listener = SpvListener(target_hash160=h160)
+        if not spv_listener.is_running:
+            spv_listener.start()
+        return text(json.dumps({
+            "status": "ok",
+            "running": spv_listener.is_running,
+            "stats": spv_listener.get_stats(),
+        }, ensure_ascii=False))
+
+    elif name == "mingchat_spv_status":
+        global spv_listener
+        if not spv_listener:
+            return text(json.dumps({"status": "ok", "spv_running": False}))
+        return text(json.dumps({
+            "status": "ok",
+            "spv_running": spv_listener.is_running,
+            "stats": spv_listener.get_stats(),
+        }, ensure_ascii=False))
+
     return {"isError": True, "content": [{"type": "text", "text": f"未知工具: {name}"}]}
 
 
