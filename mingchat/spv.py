@@ -153,27 +153,37 @@ def verify_block_hash(block_hash: str, bits: int) -> bool:
 
 # ── OP_RETURN提取 ──────────────────────────────
 
+def _read_varint(data: bytes, pos: int) -> tuple:
+    """读取BSV CompactSize整数，返回(value, new_pos)"""
+    b = data[pos]
+    if b < 0xfd:
+        return b, pos + 1
+    elif b == 0xfd:
+        return struct.unpack_from("<H", data, pos + 1)[0], pos + 3
+    elif b == 0xfe:
+        return struct.unpack_from("<I", data, pos + 1)[0], pos + 5
+    else:
+        return struct.unpack_from("<Q", data, pos + 1)[0], pos + 9
+
+
 def extract_op_return(raw_tx: bytes) -> Optional[bytes]:
     """从原始交易中提取OP_RETURN自定义数据（BSV格式）"""
     pos = 4  # skip version
 
     # inputs
-    input_count = raw_tx[pos]
-    pos += 1
+    input_count, pos = _read_varint(raw_tx, pos)
     for _ in range(input_count):
         pos += 36  # txid(32) + vout(4)
-        script_len = raw_tx[pos]
-        pos += 1 + script_len
+        script_len, pos = _read_varint(raw_tx, pos)
+        pos += script_len
         pos += 4  # sequence
 
     # outputs
-    output_count = raw_tx[pos]
-    pos += 1
+    output_count, pos = _read_varint(raw_tx, pos)
 
     for _ in range(output_count):
         pos += 8  # value
-        script_len = struct.unpack_from("<H", raw_tx, pos)[0]
-        pos += 2
+        script_len, pos = _read_varint(raw_tx, pos)
         script = raw_tx[pos:pos + script_len]
         pos += script_len
 
@@ -213,37 +223,22 @@ def extract_msg_fee(raw_tx: bytes, target_hash160: bytes) -> int:
     """
     pos = 4  # skip version
     # inputs
-    input_count = raw_tx[pos]
-    pos += 1
+    input_count, pos = _read_varint(raw_tx, pos)
     for _ in range(input_count):
         pos += 36
-        script_len = raw_tx[pos]
-        pos += 1 + script_len + 4
-
+        script_len, pos = _read_varint(raw_tx, pos)
+        pos += script_len
+        pos += 4
     # outputs
-    output_count = raw_tx[pos]
-    pos += 1
+    output_count, pos = _read_varint(raw_tx, pos)
     for _ in range(output_count):
-        value = struct.unpack_from("<q", raw_tx, pos)[0]
-        if value <= 0:
-            pos += 8
-            script_len = struct.unpack_from("<H", raw_tx, pos + 8)[0]
-            pos += 10 + script_len
-            continue
+        value = struct.unpack_from("<Q", raw_tx, pos)[0]
         pos += 8
-        script_len = struct.unpack_from("<H", raw_tx, pos)[0]
-        pos += 2
+        script_len, pos = _read_varint(raw_tx, pos)
         script = raw_tx[pos:pos + script_len]
         pos += script_len
-
-        # P2PKH: OP_DUP OP_HASH160 <20B hash160> OP_EQUALVERIFY OP_CHECKSIG
-        if (len(script) == 25
-            and script[0] == 0x76  # OP_DUP
-            and script[1] == 0xa9  # OP_HASH160
-            and script[2] == 0x14  # push 20 bytes
-            and script[-2] == 0x88  # OP_EQUALVERIFY
-            and script[-1] == 0xac  # OP_CHECKSIG
-        ):
+        # P2PKH = 76 a9 14 <20B hash160> 88 ac
+        if len(script) == 25 and script[0:3] == b'\x76\xa9\x14' and script[-2:] == b'\x88\xac':
             h160 = script[3:23]
             if h160 == target_hash160:
                 return value

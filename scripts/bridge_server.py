@@ -63,6 +63,7 @@ _client = None
 _start_time = time.time()
 _message_count = 0
 _rep_store = ReputationStore()
+_did_mgr = None  # 延迟初始化
 
 # ── 信誉数据持久化 ──
 def _load_rep_store() -> ReputationStore:
@@ -285,9 +286,20 @@ def _msg_priority_icon(priority: str) -> str:
 def _on_new_message(msg: Message):
     sender = hash160_to_address(msg.sender_hash160)
     priority = _msg_priority(msg.msg_fee)
+    
+    # 解析发送方DID
+    sender_did = ""
+    global _did_mgr
+    if _did_mgr:
+        try:
+            sender_did = _did_mgr.resolve_by_hash160(msg.sender_hash160) or ""
+        except Exception:
+            sender_did = ""
+    
     entry = {
         "type": msg.msg_type.to_str(),
         "from": sender,
+        "sender_did": sender_did,
         "to": hash160_to_address(msg.receiver_hash160),
         "content": msg.get_payload_text(),
         "timestamp": msg.timestamp,
@@ -383,6 +395,10 @@ def init_listener():
 
     _client = MingChat(private_key_wif=priv_key_for_client)
     log.info(f"钱包地址: {_client.address}")
+
+    global _did_mgr
+    from mingchat.did import MingDID
+    _did_mgr = MingDID()
 
     hash160 = address_to_hash160(_client.address)
     if isinstance(hash160, str):
@@ -502,6 +518,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "webhook_url": _webhook_url or None,
             })
+
+        elif path.startswith("/did/"):
+            # GET /did/{did} — 链上解析DID
+            parts = path.split("/")
+            if len(parts) < 3:
+                self._json({"error": "路径格式: /did/{did}"}, 400)
+                return
+            did = parts[2]
+            try:
+                global _did_mgr
+                if not _did_mgr:
+                    self._json({"error": "Bridge未就绪"}, 503)
+                    return
+                result = _did_mgr.resolve(did, use_chain=True)
+                if not result:
+                    self._json({"status": "not_found", "did": did}, 404)
+                    return
+                doc = result["doc"]
+                self._json({
+                    "status": result["status"],
+                    "did": doc.did,
+                    "name": doc.profile_name,
+                    "description": doc.profile_description,
+                    "service_endpoint": doc.service_endpoint,
+                    "controller_pk": doc.controller_pk[:16] + "..." if doc.controller_pk else "",
+                    "identity_level": doc.identity_level,
+                    "kyc_provider": doc.kyc_provider or None,
+                    "registration_txid": doc.registration_txid or None,
+                })
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
 
         elif path.startswith("/reputation/"):
             # 解析路径: /reputation/{did}/scores 或 /reputation/{did}/bonds 或 /reputation/{did}/stats

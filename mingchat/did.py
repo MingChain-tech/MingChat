@@ -39,6 +39,42 @@ class MingDID:
 
     def __init__(self):
         self._registry: Dict[str, dict] = {}  # did -> DID文档+元数据
+        self._address_did_map: Dict[str, str] = {}  # hash160_hex -> did (反向索引)
+
+    def _update_address_map(self, doc):
+        """更新地址→DID的映射"""
+        try:
+            from .bsv_tools import hash160 as bsv_hash160
+            pk_bytes = bytes.fromhex(doc.controller_pk) if doc.controller_pk else None
+            if pk_bytes:
+                h160 = bsv_hash160(pk_bytes)
+                self._address_did_map[h160.hex()[:40]] = doc.did
+        except Exception:
+            pass
+
+    def resolve_by_hash160(self, hash160_bytes: bytes) -> Optional[str]:
+        """根据hash160查找DID
+        优先本地映射，再从链上解析
+        """
+        h160_hex = hash160_bytes.hex()[:40]
+        # 查本地反向索引
+        did = self._address_did_map.get(h160_hex)
+        if did:
+            return did
+        # 对所有已注册DID做hash160匹配
+        for existing_did, entry in self._registry.items():
+            doc = entry.get("doc")
+            if doc and doc.controller_pk:
+                from .bsv_tools import hash160 as bsv_hash160
+                try:
+                    pk_bytes = bytes.fromhex(doc.controller_pk)
+                    h = bsv_hash160(pk_bytes).hex()[:40]
+                    if h == h160_hex:
+                        self._address_did_map[h160_hex] = existing_did
+                        return existing_did
+                except Exception:
+                    pass
+        return None
 
     # ── DID注册 ───────────────────────────────────────
 
@@ -105,21 +141,107 @@ class MingDID:
             "updated_at": int(time.time() * 1000),
         }
         self._registry[did_str] = entry
+        self._update_address_map(doc)
         
         return doc
 
-    def resolve(self, did: str) -> Optional[dict]:
+    def resolve(self, did: str, use_chain: bool = True) -> Optional[dict]:
         """
         解析DID文档
-        从链上或本地注册表查找
+        优先查本地注册表，未找到时从链上解析
+
+        Args:
+            did: DID标识符 (did:bsv:...)
+            use_chain: 本地未找到时是否从链上解析（默认True）
         """
         # 先查本地注册表
         if did in self._registry:
             return self._registry[did]
-        
-        # 如果是在链上的，需要从BSV交易解析
-        # 这里由外部调用者提供解析结果
-        return None
+
+        if not use_chain:
+            return None
+
+        # 链上解析: did:bsv:40hex → hash160 → BSV地址 → WoC历史 → DID_REGISTER交易
+        try:
+            from .bsv_tools import hash160_to_address as h160_to_addr
+            from .protocol import parse_op_return_data
+            from .spv import woc_get, woc_get_text, extract_op_return
+
+            # 从DID提取hash160
+            if not did.startswith("did:bsv:"):
+                return None
+            did_hash160_hex = did[8:]  # "did:bsv:" = 8 chars
+            if len(did_hash160_hex) != 40:
+                return None
+
+            h160_bytes = bytes.fromhex(did_hash160_hex)
+            addr = h160_to_addr(h160_bytes)
+
+            # WoC查询: 该地址最近50笔交易
+            history = woc_get(f"/address/{addr}/history?limit=50")
+            if not history:
+                return None
+
+            for tx in history:
+                try:
+                    tx_hex = woc_get_text(f"/tx/{tx['tx_hash']}/hex")
+                    if not tx_hex:
+                        continue
+                    op_data = extract_op_return(bytes.fromhex(tx_hex))
+                    if not op_data:
+                        continue
+                    msg = parse_op_return_data(op_data)
+                    if not msg:
+                        continue
+                    # 只处理DID_REGISTER和DID_UPDATE
+                    if msg.msg_type not in (MsgType.DID_REGISTER, MsgType.DID_UPDATE):
+                        continue
+                    # 确认receiver_hash160匹配
+                    if msg.receiver_hash160 != h160_bytes:
+                        continue
+                    # 解析消息体中的DID文档
+                    try:
+                        data = json.loads(msg.payload)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    # 确认DID匹配
+                    payload_did = data.get("did", "")
+                    if payload_did != did:
+                        continue
+
+                    # 构建DID文档
+                    doc = DIDDocument(
+                        did=did,
+                        controller_pk=data.get("controller_pk", ""),
+                        auth_pk=data.get("auth_pk", ""),
+                        service_endpoint=data.get("service_endpoint", ""),
+                        capabilities_hash=data.get("capabilities_hash", ""),
+                        profile_name=data.get("profile", {}).get("name", ""),
+                        profile_description=data.get("profile", {}).get("description", ""),
+                        controller_sig=data.get("controller_sig", ""),
+                        registration_txid=tx["tx_hash"],
+                        identity_level=data.get("identity_level", 0),
+                        kyc_hash=data.get("kyc_hash", ""),
+                        kyc_provider=data.get("kyc_provider", ""),
+                        license_ref=data.get("license_ref", ""),
+                    )
+
+                    entry = {
+                        "doc": doc,
+                        "status": "active",
+                        "update_seq": 1,
+                        "created_at": tx.get("time", 0) * 1000,
+                        "updated_at": tx.get("time", 0) * 1000,
+                    }
+                    # 缓存到本地注册表
+                    self._registry[did] = entry
+                    return entry
+                except Exception:
+                    continue
+
+            return None
+        except Exception:
+            return None
 
     def update(self, did: str, changes: dict,
                controller_privkey: bytes = None) -> Optional[dict]:
@@ -216,6 +338,7 @@ class MingDID:
             "updated_at": int(time.time() * 1000),
         }
         self._registry[doc.did] = entry
+        self._update_address_map(doc)
         return entry
 
     def _handle_update(self, data: dict, msg: Message) -> dict:

@@ -170,7 +170,7 @@ TOOL_DEFS = [  # 20个工具
     # DID
     {
         "name": "mingchat_did_register",
-        "description": "v0.3.2 注册铭识DID（含身份等级）",
+        "description": "v0.3.5 注册铭识DID（含身份等级）",
         "inputSchema": {
             "type": "object",
             "required": ["name"],
@@ -187,7 +187,7 @@ TOOL_DEFS = [  # 20个工具
     },
     {
         "name": "mingchat_did_resolve",
-        "description": "v0.3 解析铭识DID",
+        "description": "v0.3.5 解析铭识DID（本地+链上自动解析）",
         "inputSchema": {
             "type": "object",
             "required": ["did"],
@@ -472,6 +472,10 @@ def handle_tool(name: str, args: dict) -> dict:
             "description": doc.profile_description,
             "service_endpoint": doc.service_endpoint,
             "controller_pk": doc.controller_pk[:16] + "..." if doc.controller_pk else "",
+            "identity_level": doc.identity_level,
+            "kyc_provider": doc.kyc_provider or None,
+            "registration_txid": doc.registration_txid or None,
+            "updated_at": result.get("updated_at", 0),
         }, ensure_ascii=False))
     
     elif name == "mingchat_did_update":
@@ -704,7 +708,7 @@ def main():
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "mingchat-mcp", "version": "0.3.0"},
+                "serverInfo": {"name": "mingchat-mcp", "version": "0.3.5"},
             },
         })
         req = read_request()
