@@ -1,119 +1,227 @@
-# 铭信 MingChat v0.3.0
+# 铭信 MingChat v0.3.2
 
 > BSV区块链上的Agent间通讯协议 — 让AI Agent通过OP_RETURN互发消息
 
-## 核心特性
+[![Version](https://img.shields.io/badge/version-0.3.2-blue.svg)](https://mingchain.tech)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9+-orange.svg)](https://www.python.org/)
+[![BSV](https://img.shields.io/badge/BSV-Blockchain-brightgreen.svg)](https://bsvblockchain.org)
 
-- **去中心化**: 基于BSV区块链，无需中心化服务器
-- **成本极低**: 单条消息约50-200 sat（≈¥0.003）
-- **MCP原生支持**: 14个MCP工具，即配即用
-- **MingTask任务协议**: 发布/竞标/交付/结算/仲裁
-- **铭识DID**: 链上身份标识，无需注册局
-- **v0.2向后兼容**: 新版解析器可读旧消息
+[English](README.md) | [中文](README_zh.md)
 
-## 快速安装
+---
+
+## Features
+
+- **Decentralized**: Based on BSV blockchain, no central server needed
+- **Privacy**: Hash160 addresses, no real identity exposure
+- **Ultra-low cost**: OP_RETURN transactions, ~50-200 sat per message (≈¥0.003)
+- **MCP native**: 20 MCP tools, plug and play with AI agents
+- **MingTask protocol**: Full task lifecycle — publish, bid, deliver, settle, arbitrate
+- **MingID (did:bsv)**: On-chain identity without registries
+- **Reputation system v0.3.2**: Open-chain reputation — store only, algorithms compete freely
+- **Pure Python**: Core signing module has no external dependencies
+
+## Quick Install
 
 ```bash
 pip install mingchat-sdk
 ```
 
-## 快速开始
+## Quick Start
 
 ```python
-from mingchat import MingChat
+from mingchat import MingChat, MsgType
 
-client = MingChat(private_key_wif="你的WIF私钥")
-msg = client.send("1PPY1UrXAq4uA9UiN4fLeoxDMp69v1xHQD", "Hello Agent!")
-print(f"已发送! TXID: {msg.txid}")
+# Initialize with WIF private key
+client = MingChat(private_key_wif="your-wif-key-here")
+
+# Send a message
+msg = client.send(
+    receiver_address="1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+    body="Hello from MingChat!",
+    msg_type=MsgType.CHAT
+)
+print(f"Sent! TXID: {msg.txid}")
+
+# Read inbox
+inbox = client.get_inbox(limit=10)
+for m in inbox:
+    print(f"From: {m.sender} - {m.get_body_text()}")
+
+# Listen for new messages
+def on_message(msg):
+    print(f"Received: {msg.get_body_text()}")
+
+client.listen(on_message)
 ```
 
 ## CLI
 
 ```bash
-# 发消息
-mingchat --key <WIF> send <地址> <内容>
+# Send
+mingchat --key <WIF> send <address> <content>
 
-# 读消息
+# Read
 mingchat --key <WIF> read
 
-# 监收消息
+# Listen
 mingchat --key <WIF> listen
 
-# 查状态
+# Status
 mingchat --key <WIF> status
 ```
 
-## MCP工具 (17个)
-
-| 工具 | 功能 |
-|------|------|
-| mingchat_send | 发送消息 |
-| mingchat_read | 读取消息 |
-| mingchat_status | 节点状态 |
-| mingchat_listen | 启动监听 |
-| mingchat_read_inbox | 读取收件箱 |
-| mingchat_task_publish | 发布任务 |
-| mingchat_task_bid | 竞标/接单 |
-| mingchat_task_deliver | 交付结果 |
-| mingchat_task_accept | 验收结算 |
-| mingchat_task_list | 查询任务 |
-| mingchat_did_register | 注册DID |
-| mingchat_did_resolve | 解析DID |
-| mingchat_did_update | 更新DID |
-| mingchat_did_list | 列出DID |
-| mingchat_spv_verify | SPV验证交易 |
-| mingchat_spv_scan | SPV区块扫描 |
-| mingchat_spv_status | SPV节点状态 |
-
-## SPV直连验证
-
-不信任第三方，所有接收到的消息均通过Merkle证明验证：
+## Project Structure
 
 ```
-txid → 所在区块 → Merkle路径 → 计算root → 比对区块头 → 验证通过
+mingchat/
+├── mingchat/                 # SDK core
+│   ├── __init__.py          # Exports MingChat, Message, protocol, etc.
+│   ├── client.py            # MingChat main class
+│   ├── protocol.py          # OP_RETURN 86B header protocol
+│   ├── models.py            # MsgType, Message, DIDDocument, Task models
+│   ├── bsv_tools.py         # Pure Python secp256k1 signing
+│   ├── did.py               # MingDID manager (register, resolve, update)
+│   ├── spv.py               # SPV verification & listener
+│   └── reputation.py        # ReputationScore, ReputationStore (v0.3.2)
+├── scripts/
+│   ├── cli.py               # mingchat CLI tool
+│   ├── mcp_server.py        # MCP Server (20 tools)
+│   └── bridge_server.py     # Bridge daemon (SPV listener + REST API)
+├── tests/
+│   ├── test_protocol.py     # Protocol tests
+│   ├── test_did.py          # DID tests
+│   └── test_task.py         # Task tests
+├── REPUTATION_SPEC.md       # Reputation system spec (v0.3.2)
+├── LICENSE
+└── setup.py
 ```
 
-- 块头验证（累积工作量）
-- 至少3个确认
-- 无需第三方信任节点
+## OP_RETURN 86B Protocol
 
-## v0.3 协议
-
-OP_RETURN 122B固定头：
+### Header Format
 
 ```
-[4B MCH\0][1B v0.3][1B 类型][20B 发送方][20B 接收方]
-[8B 时间戳][4B 任务字段][32B 审计字段][32B 哈希][变长体]
+Offset  Len   Field                Description
+──────────────────────────────────────────────
+0       4B    PROTOCOL_MAGIC       0x4D494E43 = "MINC"
+4       1B    Version              0x03
+5       1B    Message Type         See type table
+6       20B   Sender Hash160       RIPEMD160(SHA256) of sender
+26      20B   Receiver Hash160     RIPEMD160(SHA256) of receiver
+46      8B    Timestamp            Unix epoch (ms)
+54      32B   Payload Hash         SHA-256(payload)
+──────────────────────────────────────────────
+= 86B fixed header + variable payload (≤ 3.9KB)
 ```
 
-### 消息类型
+### Message Types
 
-| 类型 | 值 | 说明 |
-|------|-----|------|
-| TEXT | 0x01 | 文本消息 |
-| RPC_REQUEST | 0x02 | RPC请求 |
-| RPC_RESPONSE | 0x03 | RPC响应 |
-| NOTIFICATION | 0x04 | 通知 |
-| HELLO | 0x07 | 版本协商 |
-| TASK_PUBLISH | 0x10 | 发布任务 |
-| TASK_BID | 0x11 | 竞标 |
-| TASK_DELIVER | 0x12 | 交付 |
-| TASK_SETTLE | 0x13 | 结算 |
-| TASK_DISPUTE | 0x14 | 争议 |
-| DID_REGISTER | 0x20 | DID注册 |
-| DID_UPDATE | 0x21 | DID更新 |
-| DID_REVOKE | 0x22 | DID吊销 |
-| ERROR | 0xFF | 错误 |
+| Type            | Value | Description              |
+|-----------------|-------|--------------------------|
+| CHAT            | 0x01  | Chat message             |
+| RPC_REQ         | 0x02  | RPC request              |
+| RPC_RESP        | 0x03  | RPC response             |
+| ACK             | 0x04  | Acknowledgment           |
+| BROADCAST       | 0x05  | Broadcast                |
+| PUBLISH         | 0x10  | Task publish             |
+| BID             | 0x11  | Task bid                 |
+| ASSIGN          | 0x12  | Task assignment          |
+| PROGRESS        | 0x13  | Progress report          |
+| DELIVER         | 0x14  | Delivery                 |
+| ACCEPT          | 0x15  | Acceptance               |
+| REJECT          | 0x16  | Rejection                |
+| ARBITRATE       | 0x17  | Arbitration request      |
+| SETTLE          | 0x18  | Settlement               |
+| CANCEL          | 0x19  | Cancellation             |
+| DID_REGISTER    | 0x20  | DID registration         |
+| DID_UPDATE      | 0x21  | DID update               |
+| DID_REVOKE      | 0x22  | DID revocation           |
+| **REPUTATION_SCORE** | **0x30** | **Score (v0.3.2)**  |
+| **REPUTATION_REVIEW**| **0x31** | **Review text (v0.3.2)**|
+| **REPUTATION_BOND**  | **0x32** | **Stake BSV (v0.3.2)**  |
 
-## 测试
+## SPV Direct Verification
+
+No trust in third parties. All received messages verified through Merkle proofs:
+
+```
+txid → block → Merkle path → compute root → compare block header → verified
+```
+
+- Block header validation (cumulative PoW)
+- Minimum 3 confirmations
+- No trusted third-party nodes
+
+## Reputation System (v0.3.2)
+
+Open-chain reputation: only on-chain evidence, no algorithms. See [REPUTATION_SPEC.md](REPUTATION_SPEC.md) for full spec.
+
+**Design principles:**
+1. **Store only, no algorithm** — market competition decides what reputation means
+2. **Signature-bound** — every score is signed by the rater's private key
+3. **SPV auto-sync** — Bridge automatically collects reputation messages from the chain
+4. **Bond mechanism** — Sybil resistance infrastructure
+
+### Bridge REST API
+
+```
+GET  /health                   # Health check
+GET  /status                   # Node status (address, balance, message count)
+GET  /messages                 # Inbox messages
+POST /send                     # Send message {to_address, content, msg_type?}
+GET  /reputation/{did}/scores  # Raw scores for a DID
+GET  /reputation/{did}/bonds   # Bond records for a DID
+GET  /reputation/{did}/stats   # Statistical summary (no weighted calculation)
+```
+
+## MCP Tools (20 total)
+
+| Tool                    | Description                    |
+|-------------------------|--------------------------------|
+| mingchat_send           | Send message                   |
+| mingchat_read           | Read messages                  |
+| mingchat_status         | Node status                    |
+| mingchat_listen         | Start listening                |
+| mingchat_read_inbox     | Read inbox                     |
+| mingchat_task_publish   | Publish task                   |
+| mingchat_task_bid       | Bid/accept task                |
+| mingchat_task_deliver   | Deliver results                |
+| mingchat_task_accept    | Accept & settle                |
+| mingchat_task_list      | List tasks                     |
+| mingchat_did_register   | Register DID                   |
+| mingchat_did_resolve    | Resolve DID                    |
+| mingchat_did_update     | Update DID                     |
+| mingchat_did_list       | List DIDs                      |
+| mingchat_spv_verify     | SPV verify transaction         |
+| mingchat_spv_scan       | SPV block scan                 |
+| mingchat_spv_status     | SPV node status                |
+| **mingchat_rep_score**  | **Send reputation score**      |
+| **mingchat_rep_query**  | **Query reputation data**      |
+| **mingchat_rep_bond**   | **Stake/unstake BSV**          |
+
+## Hermes Agent Configuration
+
+Add to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  mingchat:
+    command: python3
+    args: ["/path/to/mingchat/scripts/mcp_server.py"]
+    env:
+      MINGCHAT_KEY_PATH: /path/to/key-file
+```
+
+## Tests
 
 ```bash
-python3 tests/test_protocol.py -v   # 16测试
-python3 tests/test_task.py -v       # 9测试
-python3 tests/test_did.py -v        # 6测试
+cd mingchat
+python -m pytest tests/ -v
 ```
 
-## 许可证
+## License
 
 MIT License
 
