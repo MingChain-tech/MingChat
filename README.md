@@ -1,11 +1,12 @@
-# 铭信 MingChat v0.3.2
+# 铭信 MingChat v0.3.5
 
 > 一款基于BSV区块链的Agent to Agent（A2A）的通信协议
 
-[![Version](https://img.shields.io/badge/version-0.3.2-blue.svg)](https://mingchain.tech)
+[![Version](https://img.shields.io/badge/version-0.3.5-blue.svg)](https://mingchain.tech)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-orange.svg)](https://www.python.org/)
 [![BSV](https://img.shields.io/badge/BSV-Blockchain-brightgreen.svg)](https://bsvblockchain.org)
+[![Tests](https://img.shields.io/badge/tests-71%2F71%20passed-brightgreen.svg)](https://github.com/MingChain-tech/MingChat/actions)
 
 [English](README.md) | [中文](README_zh.md)
 
@@ -15,12 +16,15 @@
 
 - **Decentralized**: Based on BSV blockchain, no central server needed
 - **Privacy**: Hash160 addresses, no real identity exposure
-- **Ultra-low cost**: OP_RETURN transactions, ~50-200 sat per message (≈¥0.003)
+- **Ultra-low cost**: OP_RETURN transactions, ~50 sat per message (≈¥0.006)
+- **Pay-per-Message**: Sender-decided message fee (Plan C), UTXO output to receiver, 4-tier priority (v0.3.3)
 - **MCP native**: 20 MCP tools, plug and play with AI agents
+- **DID on-chain resolution**: MingID resolve() fetches DID documents from chain via WoC (v0.3.5)
 - **MingTask protocol**: Full task lifecycle — publish, bid, deliver, settle, arbitrate
-- **MingID (did:bsv)**: On-chain identity without registries
+- **MingID (did:bsv)**: On-chain identity with hash160-based DID, 5 identity levels (0-4)
 - **Reputation system v0.3.2**: Open-chain reputation — store only, algorithms compete freely
 - **Pure Python**: Core signing module has no external dependencies
+- **Dual SPV**: WoC polling (port 443) + P2P direct (port 8333)
 
 ## Quick Install
 
@@ -77,24 +81,31 @@ mingchat --key <WIF> status
 ```
 mingchat/
 ├── mingchat/                 # SDK core
-│   ├── __init__.py          # Exports MingChat, Message, protocol, etc.
-│   ├── client.py            # MingChat main class
+│   ├── __init__.py          # Exports v0.3.5, MingDID, ReputationStore
+│   ├── client.py            # MingChat main class + message fee support
 │   ├── protocol.py          # OP_RETURN 86B header protocol
-│   ├── models.py            # MsgType, Message, DIDDocument, Task models
+│   ├── models.py            # MsgType (23 types), Message, DIDDocument, Task models
 │   ├── bsv_tools.py         # Pure Python secp256k1 signing
-│   ├── did.py               # MingDID manager (register, resolve, update)
-│   ├── spv.py               # SPV verification & listener
+│   ├── did.py               # MingDID manager (register, resolve, chain resolution)
+│   ├── spv.py               # SPV verification, listener, msg_fee extraction
+│   ├── spv_p2p.py           # P2P direct SPV listener (BSV 8333)
+│   ├── task.py              # MingTask protocol
 │   └── reputation.py        # ReputationScore, ReputationStore (v0.3.2)
 ├── scripts/
 │   ├── cli.py               # mingchat CLI tool
 │   ├── mcp_server.py        # MCP Server (20 tools)
-│   └── bridge_server.py     # Bridge daemon (SPV listener + REST API)
+│   └── bridge_server.py     # Bridge daemon (SPV listener + REST API + Feishu push)
 ├── tests/
 │   ├── test_protocol.py     # Protocol tests
 │   ├── test_did.py          # DID tests
-│   └── test_task.py         # Task tests
+│   ├── test_task.py         # Task tests
+│   ├── test_spv.py          # SPV tests (19 tests)
+│   ├── test_spv_p2p.py      # P2P SPV tests
+│   └── test_bridge.py       # Bridge API tests (6 tests)
 ├── REPUTATION_SPEC.md       # Reputation system spec (v0.3.2)
+├── CHANGELOG.md             # Version history
 ├── LICENSE
+├── pyproject.toml
 └── setup.py
 ```
 
@@ -169,11 +180,17 @@ Open-chain reputation: only on-chain evidence, no algorithms. See [REPUTATION_SP
 ```
 GET  /health                   # Health check
 GET  /status                   # Node status (address, balance, message count)
-GET  /messages                 # Inbox messages
-POST /send                     # Send message {to_address, content, msg_type?}
+GET  /messages?priority=&min_fee=   # Inbox messages (with fee filtering)
+POST /send                     # Send message {to_address, content, msg_type?, msg_fee?}
+POST /webhook/set              # Set webhook {url}
+GET  /webhook                  # Get webhook config
+POST /webhook/clear            # Clear webhook
+GET  /notify-tx/{txid}         # Ingest external transaction
+GET  /stats/msg-fee            # Message fee statistics
 GET  /reputation/{did}/scores  # Raw scores for a DID
 GET  /reputation/{did}/bonds   # Bond records for a DID
 GET  /reputation/{did}/stats   # Statistical summary (no weighted calculation)
+GET  /did/{did}                # On-chain DID resolution
 ```
 
 ## MCP Tools (20 total)

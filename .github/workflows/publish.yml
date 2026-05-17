@@ -23,6 +23,54 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
+      - name: Check version consistency
+        run: |
+          echo "=== Checking version consistency ==="
+          # 1. Extract version from pyproject.toml
+          PYPROJ_VER=$(python3 -c "
+          import tomllib
+          with open('pyproject.toml','rb') as f:
+              print(tomllib.load(f)['project']['version'])
+          " 2>/dev/null || python3 -c "
+          import configparser
+          import re
+          with open('pyproject.toml') as f:
+              content = f.read()
+          m = re.search(r'version\\s*=\\s*\\\"([^\\\"]+)\\\"', content)
+          if m: print(m.group(1))
+          ")
+          echo "pyproject.toml version: $PYPROJ_VER"
+
+          # 2. Extract version from mingchat/__init__.py
+          INIT_VER=$(python3 -c "
+          import re
+          with open('mingchat/__init__.py') as f:
+              content = f.read()
+          m = re.search(r'__version__\\s*=\\s*\\\"([^\\\"]+)\\\"', content)
+          if m: print(m.group(1))
+          ")
+          echo "__init__.py version: $INIT_VER"
+
+          # 3. Extract version from git tag
+          TAG_VER=$(echo ${GITHUB_REF#refs/tags/v})
+          echo "git tag version: $TAG_VER"
+
+          # 4. Compare all three
+          if [ "$PYPROJ_VER" != "$INIT_VER" ]; then
+            echo "ERROR: pyproject.toml ($PYPROJ_VER) != __init__.py ($INIT_VER)"
+            exit 1
+          fi
+          if [ "$PYPROJ_VER" != "$TAG_VER" ]; then
+            echo "ERROR: pyproject.toml ($PYPROJ_VER) != git tag ($TAG_VER)"
+            exit 1
+          fi
+          echo "✅ All version numbers consistent: $PYPROJ_VER"
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          python -m pytest tests/ -v
+
       - name: Build package
         run: python -m build
 

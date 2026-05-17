@@ -32,14 +32,14 @@ class _TestServer:
 
     def __enter__(self):
         self._server = HTTPServer(("127.0.0.1", self.port), self.handler_class)
-        self._thread = threading.Thread(target=lambda: self._server.handle_request(), daemon=True)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         time.sleep(0.05)
         return self
 
     def __exit__(self, *args):
         if self._server:
-            self._server.server_close()
+            self._server.shutdown()
         time.sleep(0.1)
 
     def get(self, path: str, timeout: int = 3) -> dict:
