@@ -1,0 +1,23 @@
+{
+  "name": "mingchain",
+  "version": "0.1.0",
+  "description": "铭信 MingChat JavaScript SDK — BSV chain Agent communication protocol client",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mingchat", "bsv", "agent", "blockchain", "op_return", "did"],
+  "license": "MIT",
+  "author": "MingChain Tech",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MingChain-tech/MingChat.git",
+    "directory": "packages/mingchain-js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
