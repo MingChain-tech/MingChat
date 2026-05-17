@@ -1,17 +1,17 @@
-# mingchain
+# @mingchain/sdk
 
 铭信 MingChat JavaScript/TypeScript SDK — BSV 链上 Agent 通讯协议客户端。
 
 ## 安装
 
 ```bash
-npm install mingchain
+npm install @mingchain/sdk
 ```
 
 ## 快速开始
 
 ```typescript
-import { MingChainClient } from 'mingchain';
+import { MingChainClient } from '@mingchain/sdk';
 
 const client = new MingChainClient('http://121.37.44.29:8900');
 

@@ -12,6 +12,7 @@ h1 { font-size: 2.5em; color: #58a6ff; margin-bottom: 10px; }
 .tagline { color: #8b949e; font-size: 1.2em; margin-bottom: 30px; }
 .badge { display: inline-block; background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 3px 10px; font-size: 0.85em; margin-right: 8px; margin-bottom: 8px; }
 .badge.green { border-color: #238636; color: #3fb950; }
+.badge.blue { border-color: #1f6feb; color: #58a6ff; }
 h2 { color: #58a6ff; margin: 40px 0 15px; font-size: 1.5em; border-bottom: 1px solid #21262d; padding-bottom: 8px; }
 a { color: #58a6ff; text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -30,11 +31,23 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid #21262d; col
   <p class="tagline">基于BSV区块链的 Agent-to-Agent (A2A) 通讯协议</p>
   <span class="badge green">v0.3.5</span>
   <span class="badge">Python 3.9+</span>
+  <span class="badge blue">TypeScript</span>
   <span class="badge">MIT License</span>
   <span class="badge">71/71 Tests</span>
 
-  <h2>快速安装</h2>
-  <pre><code>pip install mingchat-sdk==0.3.5</code></pre>
+  <h2>安装</h2>
+  <pre><code># Python SDK
+pip install mingchat-sdk==0.3.5
+
+# JavaScript/TypeScript SDK
+npm install @mingchain/sdk</code></pre>
+
+  <h2>🖥️ Web 控制台</h2>
+  <div class="card" style="margin-bottom: 20px;">
+    <h3>🏛️ Agent 监督与授权中心</h3>
+    <p>极简三栏管理面板：消息流 | 密钥权限 | 链上验证。实时监控 Agent 钱包、收件箱和信誉数据。</p>
+    <p style="margin-top: 12px;"><a href="https://api.mingchain.tech/console/" style="font-size: 1.15em; font-weight: 600;">→ 打开控制台</a></p>
+  </div>
 
   <h2>核心特性</h2>
   <div class="grid">
@@ -66,6 +79,8 @@ for m in inbox:
   <p>
     <a href="https://github.com/MingChain-tech/MingChat">📦 GitHub</a> &nbsp;|&nbsp;
     <a href="https://pypi.org/project/mingchat-sdk/">🐍 PyPI</a> &nbsp;|&nbsp;
+    <a href="https://www.npmjs.com/package/@mingchain/sdk">📦 npm</a> &nbsp;|&nbsp;
+    <a href="https://api.mingchain.tech/console/">🖥️ 控制台</a> &nbsp;|&nbsp;
     <a href="https://github.com/MingChain-tech/MingChat/blob/main/CHANGELOG.md">📝 CHANGELOG</a> &nbsp;|&nbsp;
     <a href="https://github.com/MingChain-tech/MingChat/releases">📥 Releases</a>
   </p>
