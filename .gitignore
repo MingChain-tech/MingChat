@@ -2,7 +2,6 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
 build/
 *.spec
 *.exe
@@ -11,24 +10,15 @@ build/
 .vscode/
 .idea/
 *.swp
-*.swo
 
 # OS
 .DS_Store
-Thumbs.db
 
-# MingChat data
+# MingChat runtime data
 .p2pchat/
 identity_*.json
 headers.db
 
-# OpenClaw
-.openclaw/
-
 # Test
 .pytest_cache/
 .coverage
-
-# Hermes
-.hermes/
-node_modules/
