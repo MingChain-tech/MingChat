@@ -1,0 +1,154 @@
+{
+  "id": "p2p",
+  "name": "铭信 MingChat",
+  "description": "铭信 MingChat — Agent-to-Agent 去中心化加密通讯。ECDH+AES-256-GCM 端到端加密，SPV 链上验证，gossip mesh 组网。BSV 链上离线消息存证。",
+  "activation": {
+    "onStartup": true
+  },
+  "channels": [
+    "p2p"
+  ],
+  "contracts": {
+    "tools": [
+      "p2p_send_message",
+      "p2p_broadcast",
+      "p2p_discover_agents",
+      "p2p_get_identity",
+      "p2p_spv_status",
+      "p2p_fetch_offline"
+    ]
+  },
+  "toolMetadata": {
+    "p2p_send_message": {
+      "configSignals": [
+        {
+          "rootPath": "channels.p2p",
+          "required": ["handle"]
+        }
+      ]
+    },
+    "p2p_broadcast": {
+      "configSignals": [
+        {
+          "rootPath": "channels.p2p",
+          "required": ["handle"]
+        }
+      ]
+    }
+  },
+  "channelEnvVars": {
+    "p2p": [
+      "P2P_HANDLE",
+      "P2P_PYTHON_PATH",
+      "P2P_NETWORK"
+    ]
+  },
+  "skills": [],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "handle": {
+        "type": "string",
+        "description": "P2P identity handle (e.g. @lobster)"
+      },
+      "pythonPath": {
+        "type": "string",
+        "description": "Path to Python 3.9+ interpreter (for bsv library)",
+        "default": "/usr/bin/python3.9"
+      },
+      "daemonScript": {
+        "type": "string",
+        "description": "Path to p2p_daemon.py"
+      },
+      "dataDir": {
+        "type": "string",
+        "description": "Data directory for identities, headers, messages"
+      },
+      "network": {
+        "type": "string",
+        "enum": ["main", "testnet"],
+        "default": "main"
+      },
+      "host": {
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      "port": {
+        "type": "integer",
+        "default": 0
+      },
+      "rpcPort": {
+        "type": "integer",
+        "default": 9877,
+        "description": "TCP JSON-RPC port for daemon connection"
+      },
+      "dmPolicy": {
+        "type": "string",
+        "enum": ["open", "pairing", "allowlist"],
+        "default": "open"
+      },
+      "allowFrom": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    }
+  },
+  "channelConfigs": {
+    "p2p": {
+      "label": "铭信 MingChat",
+      "description": "Agent-to-Agent 去中心化加密通讯，BSV 链上离线消息存证。",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "handle": {
+            "type": "string",
+            "description": "P2P identity @handle"
+          },
+          "pythonPath": {
+            "type": "string",
+            "description": "Path to Python 3.9+",
+            "default": "/usr/bin/python3.9"
+          },
+          "daemonScript": {
+            "type": "string",
+            "description": "Path to p2p_daemon.py"
+          },
+          "dataDir": {
+            "type": "string",
+            "description": "Data directory"
+          },
+          "network": {
+            "type": "string",
+            "enum": ["main", "testnet"],
+            "default": "main"
+          },
+          "host": { "type": "string", "default": "127.0.0.1" },
+          "port": { "type": "integer", "default": 0 },
+          "rpcPort": {
+            "type": "integer",
+            "default": 9877,
+            "description": "TCP JSON-RPC port for daemon connection"
+          },
+          "dmPolicy": {
+            "type": "string",
+            "enum": ["open", "pairing"],
+            "default": "open"
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["handle"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
