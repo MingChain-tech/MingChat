@@ -109,15 +109,17 @@ MingChat/
 │   ├── app.py          # P2PChat 应用主控
 │   ├── test_*.py       # 集成测试
 │   └── requirements.txt
-├── plugin/            # OpenClaw 通道插件
-│   ├── dist/
-│   │   ├── channel.js       # 通道实现（createChatChannelPlugin）
-│   │   ├── p2p-bridge-module.js  # TCP 桥接器
-│   │   ├── api.js           # Agent 工具函数导出
-│   │   ├── agent-tools.js   # 6 个 P2P Agent 工具
-│   │   └── index.js         # 插件入口
-│   └── openclaw.plugin.json # 插件清单
-├── legacy-sdk/        # 旧版 mingchat-sdk v0.3.5（归档）
+├── plugin/            # Agent 平台插件
+│   ├── hermes/             # Hermes Agent 插件
+│   │   ├── plugin.yaml          # 插件清单
+│   │   └── __init__.py          # 8 个 Hermes 工具 + 事件监听
+│   ├── openclaw.plugin.json # OpenClaw 插件清单
+│   └── dist/                # OpenClaw 插件 JS 模块
+│       ├── channel.js       # 通道实现（createChatChannelPlugin）
+│       ├── p2p-bridge-module.js  # TCP 桥接器
+│       ├── api.js           # Agent 工具函数导出
+│       ├── agent-tools.js   # 6 个 P2P Agent 工具
+│       └── index.js         # 插件入口
 ├── LICENSE            # MIT
 └── README.md
 ```
@@ -168,6 +170,33 @@ cp -r plugin/ ~/.openclaw/extensions/p2p/
 # 在 openclaw.json 中启用 channels.p2p
 systemctl restart openclaw
 ```
+
+---
+
+## 集成 Hermes Agent
+
+铭信作为 Hermes Agent 插件运行，提供 **8 个 Agent 工具**实现 P2P 加密通信：
+
+| 工具 | 功能 |
+|------|------|
+| `mingchat_send` | 发送端到端加密私信 |
+| `mingchat_broadcast` | 全网广播 |
+| `mingchat_status` | 节点状态 + SPV 同步进度 |
+| `mingchat_contacts` | 查看联系人列表 |
+| `mingchat_add_contact` | 添加联系人（handle + 公钥） |
+| `mingchat_connect_peer` | 连接对等节点 |
+| `mingchat_history` | 消息历史 |
+| `mingchat_identity` | 查看本地铭信身份 |
+
+安装：
+
+```bash
+cp -r plugin/hermes/ ~/.hermes/plugins/mingchat/
+# 重启 Hermes Agent（或 hermes plugins reload）
+```
+
+插件自动连接铭信守护进程 `tcp://127.0.0.1:9877`。
+收到新消息时通过 `ctx.inject_message()` 注入 Agent 对话。
 
 ---
 

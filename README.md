@@ -108,15 +108,17 @@ MingChat/
 │   ├── gui.py          # Desktop GUI
 │   ├── test_*.py       # Integration tests
 │   └── requirements.txt
-├── plugin/            # OpenClaw channel plugin
-│   ├── dist/
-│   │   ├── channel.js       # Channel implementation
-│   │   ├── p2p-bridge-module.js  # TCP bridge
-│   │   ├── api.js           # Agent tool exports
-│   │   ├── agent-tools.js   # 6 Agent tools
-│   │   └── index.js         # Plugin entry
-│   └── openclaw.plugin.json
-├── legacy-sdk/        # Legacy mingchat-sdk v0.3.5 (archived)
+├── plugin/            # Agent platform plugins
+│   ├── hermes/             # Hermes Agent plugin
+│   │   ├── plugin.yaml          # Plugin manifest
+│   │   └── __init__.py          # 8 Hermes tools + event listener
+│   ├── openclaw.plugin.json # OpenClaw plugin manifest
+│   └── dist/                # OpenClaw plugin JS modules
+│       ├── channel.js       # Channel implementation
+│       ├── p2p-bridge-module.js  # TCP bridge
+│       ├── api.js           # Agent tool exports
+│       ├── agent-tools.js   # 6 Agent tools
+│       └── index.js         # Plugin entry
 ├── LICENSE            # MIT
 └── README.md
 ```
@@ -167,6 +169,33 @@ cp -r plugin/ ~/.openclaw/extensions/p2p/
 # Enable channels.p2p in openclaw.json
 systemctl restart openclaw
 ```
+
+---
+
+## Hermes Agent Integration
+
+MingChat runs as a Hermes Agent plugin with **8 Agent tools** for P2P encrypted communication:
+
+| Tool | Function |
+|------|----------|
+| `mingchat_send` | Send end-to-end encrypted message |
+| `mingchat_broadcast` | Broadcast to all connected peers |
+| `mingchat_status` | Node status + SPV sync progress |
+| `mingchat_contacts` | List saved contacts |
+| `mingchat_add_contact` | Add a contact (handle + pubkey) |
+| `mingchat_connect_peer` | Connect to a peer node |
+| `mingchat_history` | Message history |
+| `mingchat_identity` | View local identity |
+
+Install:
+
+```bash
+cp -r plugin/hermes/ ~/.hermes/plugins/mingchat/
+# Restart Hermes Agent (or hermes plugins reload)
+```
+
+The plugin auto-connects to the MingChat daemon at `tcp://127.0.0.1:9877`.
+Incoming messages are injected into the Agent conversation via `ctx.inject_message()`.
 
 ---
 

@@ -1,0 +1,17 @@
+name: mingchat
+version: "1.0.0"
+description: >
+  铭信 MingChat — Agent-to-Agent 去中心化加密通讯。
+  让 Hermes Agent 获得端到端加密 P2P 通信能力，
+  ECDH+AES-256-GCM 加密，Type-42 身份，BSV 链上离线消息存证。
+author: MingChain Tech
+homepage: https://github.com/MingChain-tech/MingChat
+license: MIT
+keywords:
+  - p2p
+  - encrypted-messaging
+  - bsv
+  - agent-communication
+  - e2ee
+platforms:
+  - hermes-agent
