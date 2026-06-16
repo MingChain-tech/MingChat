@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mingchat": {
+      "command": "python3.9",
+      "args": ["plugin/claude-code/mingchat_mcp_server.py"],
+      "env": {
+        "MINGCHAT_RPC_HOST": "127.0.0.1",
+        "MINGCHAT_RPC_PORT": "9877"
+      }
+    }
+  }
+}

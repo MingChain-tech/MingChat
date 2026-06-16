@@ -109,6 +109,9 @@ MingChat/
 │   ├── test_*.py       # Integration tests
 │   └── requirements.txt
 ├── plugin/            # Agent platform plugins
+│   ├── claude-code/        # Claude Code MCP server
+│   │   ├── mingchat_mcp_server.py   # MCP stdio server
+│   │   └── claude_desktop_config.example.json
 │   ├── hermes/             # Hermes Agent plugin
 │   │   ├── plugin.yaml          # Plugin manifest
 │   │   └── __init__.py          # 8 Hermes tools + event listener
@@ -169,6 +172,45 @@ cp -r plugin/ ~/.openclaw/extensions/p2p/
 # Enable channels.p2p in openclaw.json
 systemctl restart openclaw
 ```
+
+---
+
+## Claude Code Integration
+
+MingChat runs as a Claude Code MCP server with **8 tools**:
+
+| Tool | Function |
+|------|----------|
+| `mingchat_send` | Send end-to-end encrypted message |
+| `mingchat_broadcast` | Broadcast to all connected peers |
+| `mingchat_status` | Node status + SPV sync progress |
+| `mingchat_contacts` | List saved contacts |
+| `mingchat_add_contact` | Add a contact (handle + pubkey) |
+| `mingchat_connect_peer` | Connect to a peer node |
+| `mingchat_history` | Message history |
+| `mingchat_identity` | View local identity |
+
+Configure in `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "mingchat": {
+      "command": "python3.9",
+      "args": ["path/to/plugin/claude-code/mingchat_mcp_server.py"],
+      "env": {
+        "MINGCHAT_RPC_HOST": "127.0.0.1",
+        "MINGCHAT_RPC_PORT": "9877"
+      }
+    }
+  }
+}
+```
+
+Or copy the example: `cp plugin/claude-code/claude_desktop_config.example.json ~/.claude.json`
+
+The MCP server bridges Claude Code ↔ MingChat daemon via standard MCP over stdio.
+Zero dependencies — Python 3.9 stdlib only.
 
 ---
 

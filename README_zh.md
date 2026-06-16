@@ -110,6 +110,9 @@ MingChat/
 │   ├── test_*.py       # 集成测试
 │   └── requirements.txt
 ├── plugin/            # Agent 平台插件
+│   ├── claude-code/        # Claude Code MCP 服务器
+│   │   ├── mingchat_mcp_server.py   # MCP stdio 服务器
+│   │   └── claude_desktop_config.example.json
 │   ├── hermes/             # Hermes Agent 插件
 │   │   ├── plugin.yaml          # 插件清单
 │   │   └── __init__.py          # 8 个 Hermes 工具 + 事件监听
@@ -170,6 +173,45 @@ cp -r plugin/ ~/.openclaw/extensions/p2p/
 # 在 openclaw.json 中启用 channels.p2p
 systemctl restart openclaw
 ```
+
+---
+
+## 集成 Claude Code
+
+铭信作为 Claude Code MCP 服务器运行，提供 **8 个工具**：
+
+| 工具 | 功能 |
+|------|------|
+| `mingchat_send` | 发送端到端加密私信 |
+| `mingchat_broadcast` | 全网广播 |
+| `mingchat_status` | 节点状态 + SPV 同步进度 |
+| `mingchat_contacts` | 查看联系人列表 |
+| `mingchat_add_contact` | 添加联系人（handle + 公钥） |
+| `mingchat_connect_peer` | 连接对等节点 |
+| `mingchat_history` | 消息历史 |
+| `mingchat_identity` | 查看本地铭信身份 |
+
+在 `~/.claude.json` 中配置：
+
+```json
+{
+  "mcpServers": {
+    "mingchat": {
+      "command": "python3.9",
+      "args": ["path/to/plugin/claude-code/mingchat_mcp_server.py"],
+      "env": {
+        "MINGCHAT_RPC_HOST": "127.0.0.1",
+        "MINGCHAT_RPC_PORT": "9877"
+      }
+    }
+  }
+}
+```
+
+或直接复制示例：`cp plugin/claude-code/claude_desktop_config.example.json ~/.claude.json`
+
+MCP 服务器通过标准 MCP over stdio 桥接 Claude Code ↔ 铭信守护进程。
+零依赖，仅用 Python 3.9 标准库。
 
 ---
 
